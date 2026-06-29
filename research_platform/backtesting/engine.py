@@ -14,10 +14,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-
-from utils.logger import get_logger
-
-logger = get_logger("backtesting")
 from enum import Enum
 
 from pydantic import BaseModel, Field, model_validator
@@ -32,6 +28,8 @@ from research_platform.research.deflated_sharpe import (
 )
 from utils.logger import get_logger
 
+logger = get_logger("backtesting_engine")
+
 # Enable BLAS optimization for NumPy
 try:
     from utils.blas_config import auto_configure
@@ -41,8 +39,6 @@ try:
 except ImportError:
     logger.warning("BLAS configuration not available, using default NumPy")
 
-logger = get_logger("backtesting_engine")
-
 
 class RebalanceFrequency(str, Enum):
     """Rebalancing frequency."""
@@ -51,6 +47,19 @@ class RebalanceFrequency(str, Enum):
     WEEKLY = "weekly"
     MONTHLY = "monthly"
     QUARTERLY = "quarterly"
+
+
+# Periods-per-year used for annualization/Sharpe scaling, keyed to the actual
+# spacing of the returns series. Previously the engine always used 252
+# (trading days/year) regardless of rebalance_frequency, which overstates
+# annualized return and inflates the Sharpe ratio by sqrt(252/periods) for
+# any non-daily rebalance — e.g. ~2.2x inflation for weekly rebalancing.
+PERIODS_PER_YEAR = {
+    RebalanceFrequency.DAILY: 252,
+    RebalanceFrequency.WEEKLY: 52,
+    RebalanceFrequency.MONTHLY: 12,
+    RebalanceFrequency.QUARTERLY: 4,
+}
 
 
 class BacktestConfig(BaseModel):
@@ -78,7 +87,22 @@ class BacktestConfig(BaseModel):
     max_position_size: float = Field(
         default=0.1, description="Maximum position size as fraction of capital"
     )
-    stop_loss: float | None = Field(default=None, description="Stop loss threshold")
+    stop_loss: float | None = Field(
+        default=None,
+        description="Stop loss threshold as a negative fraction, e.g. -0.05 for -5%. "
+        "Checked against current mark-to-market price every rebalance, not just at exit.",
+    )
+    take_profit: float | None = Field(
+        default=None, description="Optional take-profit threshold as a positive fraction"
+    )
+
+    # Date alignment
+    max_date_alignment_lookback_days: int = Field(
+        default=5,
+        description="If a rebalance date isn't a trading day, look back up to this many "
+        "calendar days for the most recent available trading day instead of silently "
+        "skipping the rebalance.",
+    )
 
     # Benchmark
     benchmark: str | None = Field(default="NIFTY50", description="Benchmark index")
@@ -88,6 +112,10 @@ class BacktestConfig(BaseModel):
         if self.start_date > self.end_date:
             raise ValueError("start_date cannot be after end_date")
         return self
+
+    @property
+    def periods_per_year(self) -> int:
+        return PERIODS_PER_YEAR[self.rebalance_frequency]
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
@@ -112,6 +140,7 @@ class Position(BaseModel):
     # Metadata
     signal: int = Field(default=1, description="Signal (1: long, -1: short)")
     confidence: float = Field(default=1.0, description="Prediction confidence")
+    exit_reason: str = Field(default="", description="signal_change | stop_loss | take_profit | end_of_backtest")
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
@@ -156,10 +185,13 @@ class BacktestResult(BaseModel):
     avg_win: float = Field(..., description="Average win")
     avg_loss: float = Field(..., description="Average loss")
     profit_factor: float = Field(..., description="Profit factor")
+    stop_loss_exits: int = Field(default=0, description="Trades closed by stop loss")
+    take_profit_exits: int = Field(default=0, description="Trades closed by take profit")
+    signal_change_exits: int = Field(default=0, description="Trades closed by signal change")
 
     # Portfolio statistics
     avg_positions: float = Field(..., description="Average number of positions")
-    turnover: float = Field(..., description="Portfolio turnover")
+    turnover: float = Field(..., description="Portfolio turnover (annualized)")
 
     # Time series - use deque with maxlen to prevent unbounded memory growth
     equity_curve: deque = Field(
@@ -200,6 +232,12 @@ class BacktestingEngine:
         self._all_positions: list[Position] = []
         self._current_portfolio: Portfolio | None = None
 
+        # Pre-indexed available trading dates per symbol, populated in
+        # run_backtest() from price_data. Used by _resolve_trading_date to
+        # align a calendar rebalance_date to the most recent actual trading
+        # day instead of silently returning an empty price dict.
+        self._available_dates: pd.DatetimeIndex | None = None
+
         # Initialize transaction cost calculator
         cost_model = TransactionCostModel(
             commission_rate=config.commission_rate, slippage_rate=config.slippage_rate
@@ -234,19 +272,27 @@ class BacktestingEngine:
         if len(price_data) < 100:
             raise ValueError(f"Insufficient observations: {len(price_data)} < 100")
 
+        self._available_dates = pd.DatetimeIndex(sorted(price_data["date"].unique()))
+
         # Initialize portfolio
         self._initialize_portfolio()
 
-        # Generate rebalance dates
+        # Generate rebalance dates, aligned to actual trading days
         rebalance_dates = self._generate_rebalance_dates()
 
         # Run backtest
-        for rebalance_date in rebalance_dates:
-            # Get predictions for this date
-            date_predictions = self._get_predictions_for_date(predictions, rebalance_date)
+        for raw_date in rebalance_dates:
+            resolved_date = self._resolve_trading_date(raw_date)
+            if resolved_date is None:
+                self.logger.warning(
+                    f"No trading day found within "
+                    f"{self.config.max_date_alignment_lookback_days} days of {raw_date}; "
+                    f"skipping this rebalance explicitly (logged, not silent)."
+                )
+                continue
 
-            # Rebalance portfolio
-            self._rebalance_portfolio(rebalance_date, date_predictions, price_data)
+            date_predictions = self._get_predictions_for_date(predictions, resolved_date)
+            self._rebalance_portfolio(resolved_date, date_predictions, price_data)
 
         # Calculate results
         result = self._calculate_results()
@@ -254,6 +300,39 @@ class BacktestingEngine:
         self.logger.info(f"Backtest completed. Total return: {result.total_return:.2%}")
 
         return result
+
+    def _resolve_trading_date(self, raw_date: datetime) -> datetime | None:
+        """
+        Map a calendar rebalance date to the nearest actual trading day
+        on or before it (never after — that would be lookahead).
+
+        Previously _get_symbol_prices used an exact equality match against
+        price_data["date"], so any rebalance_date landing on a weekend or
+        market holiday (guaranteed to happen routinely for MONTHLY/QUARTERLY
+        rebalancing, which steps by fixed 30/90 calendar days) silently
+        returned an empty price dict and the rebalance was skipped with no
+        log line — i.e. large unexplained gaps in the strategy's trading
+        activity.
+        """
+        if self._available_dates is None or len(self._available_dates) == 0:
+            return None
+
+        raw_ts = pd.Timestamp(raw_date)
+        candidates = self._available_dates[self._available_dates <= raw_ts]
+        if candidates.empty:
+            return None
+
+        resolved = candidates[-1]
+        lag_days = (raw_ts - resolved).days
+        if lag_days > self.config.max_date_alignment_lookback_days:
+            return None
+
+        if lag_days > 0:
+            self.logger.info(
+                f"Rebalance date {raw_date.date()} is not a trading day; "
+                f"aligned to {resolved.date()} ({lag_days}d lookback)"
+            )
+        return resolved.to_pydatetime()
 
     def _initialize_portfolio(self):
         """Initialize portfolio with initial capital."""
@@ -291,7 +370,6 @@ class BacktestingEngine:
 
     def _get_predictions_for_date(self, predictions: list[Any], date: datetime) -> list[Any]:
         """Get predictions for a specific date."""
-        # Filter predictions for this date
         date_predictions = [p for p in predictions if p.date == date]
         return date_predictions
 
@@ -302,42 +380,34 @@ class BacktestingEngine:
         Rebalance portfolio based on predictions.
 
         Args:
-            date: Rebalance date
+            date: Rebalance date (already resolved to an actual trading day)
             predictions: Predictions for this date
             price_data: Price data
         """
         self.logger.info(f"Rebalancing portfolio on {date}")
 
-        # Get current positions
         current_positions = self._current_portfolio.positions.copy()
-
-        # Get prices for all symbols
         symbol_prices = self._get_symbol_prices(date, price_data)
 
-        # Close positions that should be closed
         new_positions = []
         for position in current_positions:
-            should_close = self._should_close_position(position, predictions, date)
+            current_price = symbol_prices.get(position.symbol, position.entry_price)
 
-            if should_close:
-                # Close position
-                base_exit_price = symbol_prices.get(position.symbol, position.entry_price)
+            close_reason = self._evaluate_close_reason(position, predictions, current_price)
 
-                # Apply slippage to exit price (worse price for sell)
+            if close_reason is not None:
+                base_exit_price = current_price
                 exit_price = base_exit_price * (1 - self.config.slippage_rate)
 
                 position.exit_date = date
                 position.exit_price = exit_price
+                position.exit_reason = close_reason
                 position.pnl = (exit_price - position.entry_price) * position.shares
                 position.pnl_pct = (exit_price - position.entry_price) / position.entry_price
 
-                # Calculate transaction costs using cost calculator
                 sell_cost = self.cost_calculator.calculate_sell_cost(position.shares, exit_price)
-
-                # Update cash (net of costs)
                 self._current_portfolio.cash += (position.shares * exit_price) - sell_cost
 
-                # Add to all positions
                 self._all_positions.append(position)
             else:
                 new_positions.append(position)
@@ -349,16 +419,13 @@ class BacktestingEngine:
             if len(new_positions) >= self.config.max_positions:
                 break
 
-            # Check if already in position
             if any(p.symbol == pred.symbol for p in new_positions):
                 continue
 
-            # Calculate position size
             base_price = symbol_prices.get(pred.symbol, 0)
             if base_price <= 0:
                 continue
 
-            # Apply slippage to buy price (worse price for buy)
             price = base_price * (1 + self.config.slippage_rate)
 
             position_value = min(
@@ -368,15 +435,12 @@ class BacktestingEngine:
 
             shares = position_value / price
 
-            # Calculate transaction costs using cost calculator
             buy_cost = self.cost_calculator.calculate_buy_cost(shares, price)
 
-            # Check if enough cash (including costs)
             total_cost = (shares * price) + buy_cost
             if total_cost > self._current_portfolio.cash:
                 continue
 
-            # Open position
             new_position = Position(
                 symbol=pred.symbol,
                 entry_date=date,
@@ -387,11 +451,8 @@ class BacktestingEngine:
             )
 
             new_positions.append(new_position)
-
-            # Update cash (net of costs)
             self._current_portfolio.cash -= total_cost
 
-        # Calculate portfolio value
         long_value = sum(
             p.shares * symbol_prices.get(p.symbol, p.entry_price) for p in new_positions
         )
@@ -399,7 +460,6 @@ class BacktestingEngine:
 
         total_value = self._current_portfolio.cash + long_value - short_value
 
-        # Update portfolio
         self._current_portfolio = Portfolio(
             date=date,
             cash=self._current_portfolio.cash,
@@ -416,7 +476,7 @@ class BacktestingEngine:
         self._portfolio_history.append(self._current_portfolio)
 
     def _get_symbol_prices(self, date: datetime, price_data: pd.DataFrame) -> dict[str, float]:
-        """Get prices for all symbols on a given date."""
+        """Get prices for all symbols on a given (already-resolved trading) date."""
         date_data = price_data[price_data["date"] == date]
 
         prices = {}
@@ -425,26 +485,42 @@ class BacktestingEngine:
 
         return prices
 
-    def _should_close_position(
-        self, position: Position, predictions: list[Any], date: datetime
-    ) -> bool:
-        """Determine if a position should be closed."""
-        # Check for stop loss
-        if self.config.stop_loss:
-            # This would require current price - simplified for now
-            pass
+    def _evaluate_close_reason(
+        self, position: Position, predictions: list[Any], current_price: float
+    ) -> str | None:
+        """
+        Determine if a position should be closed, and why.
 
-        # Check if signal changed
-        return any(pred.symbol == position.symbol and pred.prediction != 2 for pred in predictions)
+        Previously the stop_loss config field existed but was never actually
+        checked (`if self.config.stop_loss: pass`) — meaning a configured
+        stop loss had zero effect on the backtest and every "stop-loss
+        protected" position could run to an arbitrary loss until the next
+        signal change. This now actually enforces stop_loss/take_profit
+        against the current mark-to-market price at every rebalance.
+        """
+        if position.entry_price <= 0:
+            return None
+
+        pnl_pct = (current_price - position.entry_price) / position.entry_price
+
+        if self.config.stop_loss is not None and pnl_pct <= self.config.stop_loss:
+            return "stop_loss"
+
+        if self.config.take_profit is not None and pnl_pct >= self.config.take_profit:
+            return "take_profit"
+
+        signal_changed = any(
+            pred.symbol == position.symbol and pred.prediction != 2 for pred in predictions
+        )
+        if signal_changed:
+            return "signal_change"
+
+        return None
 
     def _get_top_predictions(self, predictions: list[Any]) -> list[Any]:
         """Get top predictions for new positions."""
-        # Filter for top class (2)
         top_predictions = [p for p in predictions if p.prediction == 2]
-
-        # Sort by confidence
         top_predictions.sort(key=lambda x: x.confidence, reverse=True)
-
         return top_predictions
 
     def _calculate_results(self) -> BacktestResult:
@@ -452,11 +528,9 @@ class BacktestingEngine:
         if not self._portfolio_history:
             raise ValueError("No portfolio history to calculate results")
 
-        # Extract returns
-        returns = [p.daily_return for p in self._portfolio_history[1:]]  # Skip first day
+        returns = [p.daily_return for p in self._portfolio_history[1:]]
         equity_curve = [(p.date, p.total_value) for p in self._portfolio_history]
 
-        # Level 3: NaN Repair - Handle NaN in returns before calculation
         returns_clean = [r for r in returns if not np.isnan(r) and not np.isinf(r)]
         if len(returns_clean) < len(returns):
             self.logger.warning(
@@ -466,17 +540,17 @@ class BacktestingEngine:
         if not returns_clean:
             raise ValueError("No valid returns after cleaning NaN/Inf values")
 
-        # Calculate metrics
-        total_return = self._portfolio_history[-1].cumulative_return
-        annualized_return = (1 + total_return) ** (252 / len(returns_clean)) - 1
+        periods_per_year = self.config.periods_per_year
 
-        sharpe_ratio = self._calculate_sharpe_ratio(returns_clean)
-        sortino_ratio = self._calculate_sortino_ratio(returns_clean)
+        total_return = self._portfolio_history[-1].cumulative_return
+        annualized_return = (1 + total_return) ** (periods_per_year / len(returns_clean)) - 1
+
+        sharpe_ratio = self._calculate_sharpe_ratio(returns_clean, periods_per_year)
+        sortino_ratio = self._calculate_sortino_ratio(returns_clean, periods_per_year)
         max_drawdown = self._calculate_max_drawdown(equity_curve)
 
-        # Calculate deflated Sharpe (institutional requirement)
         deflated_sharpe = None
-        if len(returns_clean) >= 30:  # Minimum observations required
+        if len(returns_clean) >= 30:
             try:
                 deflated_result = self.deflated_sharpe_calc.calculate_deflated_sharpe(returns_clean)
                 deflated_sharpe = deflated_result.deflated_sharpe
@@ -484,16 +558,19 @@ class BacktestingEngine:
             except Exception as e:
                 self.logger.warning(f"Failed to calculate deflated Sharpe: {e}")
 
-        # Trade statistics
         total_trades = len(self._all_positions)
         win_rate = self._calculate_win_rate()
         avg_win = self._calculate_avg_win()
         avg_loss = self._calculate_avg_loss()
         profit_factor = self._calculate_profit_factor()
+        stop_loss_exits = sum(1 for p in self._all_positions if p.exit_reason == "stop_loss")
+        take_profit_exits = sum(1 for p in self._all_positions if p.exit_reason == "take_profit")
+        signal_change_exits = sum(
+            1 for p in self._all_positions if p.exit_reason == "signal_change"
+        )
 
-        # Portfolio statistics
         avg_positions = np.mean([len(p.positions) for p in self._portfolio_history])
-        turnover = self._calculate_turnover()
+        turnover = self._calculate_turnover(periods_per_year)
 
         result = BacktestResult(
             config=self.config,
@@ -508,6 +585,9 @@ class BacktestingEngine:
             avg_win=avg_win,
             avg_loss=avg_loss,
             profit_factor=profit_factor,
+            stop_loss_exits=stop_loss_exits,
+            take_profit_exits=take_profit_exits,
+            signal_change_exits=signal_change_exits,
             avg_positions=avg_positions,
             turnover=turnover,
             equity_curve=equity_curve,
@@ -517,15 +597,15 @@ class BacktestingEngine:
 
         return result
 
-    def _calculate_sharpe_ratio(self, returns: list[float]) -> float:
-        """Calculate Sharpe ratio."""
+    def _calculate_sharpe_ratio(self, returns: list[float], periods_per_year: int) -> float:
+        """Calculate Sharpe ratio, scaled by the actual return periodicity."""
         if not returns or np.std(returns) == 0:
             return 0.0
 
-        return np.mean(returns) / np.std(returns) * np.sqrt(252)
+        return np.mean(returns) / np.std(returns) * np.sqrt(periods_per_year)
 
-    def _calculate_sortino_ratio(self, returns: list[float]) -> float:
-        """Calculate Sortino ratio."""
+    def _calculate_sortino_ratio(self, returns: list[float], periods_per_year: int) -> float:
+        """Calculate Sortino ratio, scaled by the actual return periodicity."""
         if not returns:
             return 0.0
 
@@ -539,7 +619,7 @@ class BacktestingEngine:
         if downside_std == 0:
             return 0.0
 
-        return np.mean(returns) / downside_std * np.sqrt(252)
+        return np.mean(returns) / downside_std * np.sqrt(periods_per_year)
 
     def _calculate_max_drawdown(self, equity_curve: list[tuple[datetime, float]]) -> float:
         """Calculate maximum drawdown."""
@@ -590,14 +670,36 @@ class BacktestingEngine:
 
         return gross_profit / gross_loss
 
-    def _calculate_turnover(self) -> float:
-        """Calculate portfolio turnover."""
-        if len(self._portfolio_history) < 2:
+    def _calculate_turnover(self, periods_per_year: int) -> float:
+        """
+        Calculate annualized portfolio turnover as
+        (total value bought+sold) / (2 * avg portfolio value) / years.
+
+        Previously this was
+        (total_trades * avg_portfolio_value * position_size) /
+        (avg_portfolio_value * len(history))
+        which algebraically reduces to just
+        total_trades * position_size / len(history) — avg_portfolio_value
+        cancels out entirely, so the "value" terms in that formula did
+        nothing, and the result wasn't turnover by any standard definition
+        (turnover should reflect *actual traded notional* relative to
+        portfolio size, not just a trade count scaled by a constant).
+        """
+        if len(self._portfolio_history) < 2 or not self._all_positions:
             return 0.0
 
-        total_trades = len(self._all_positions)
         avg_portfolio_value = np.mean([p.total_value for p in self._portfolio_history])
+        if avg_portfolio_value <= 0:
+            return 0.0
 
-        return (total_trades * avg_portfolio_value * self.config.position_size) / (
-            avg_portfolio_value * len(self._portfolio_history)
+        traded_notional = sum(
+            p.shares * p.entry_price + p.shares * (p.exit_price or p.entry_price)
+            for p in self._all_positions
         )
+
+        num_periods = len(self._portfolio_history) - 1
+        years = num_periods / periods_per_year
+        if years <= 0:
+            return 0.0
+
+        return (traded_notional / (2 * avg_portfolio_value)) / years

@@ -3,15 +3,27 @@ Label Store Validation Utilities
 
 Institutional-grade validation for label generation and storage.
 Ensures strict Point-In-Time (PIT) controls to prevent lookahead bias.
+
+CONNECTION TO THE PIPELINE (this was previously missing):
+This validator is meant to sit between
+`QuantResearchOS.services.label_engine.triple_barrier.MultiObjectiveLabeler`
+(which computes raw barrier-hit outcomes) and the label store / training
+pipeline. Use `LabelValidator.from_triple_barrier_events(...)` to convert
+that labeler's raw DataFrame output into validated `Label` objects before
+anything downstream is allowed to train on them. Call
+`validate_and_filter(...)` rather than constructing labels and assuming
+they're safe — invalid rows are dropped and logged, not silently kept.
 """
+
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from prediction_intelligence.label_models import Label
 
+from prediction_intelligence.label_models import Label, LabelType
 from utils.logger import get_logger
 
 logger = get_logger("label_validator")
@@ -24,9 +36,128 @@ class LabelValidator:
     Ensures strict PIT controls and data quality.
     """
 
+    REQUIRED_FIELDS = [
+        "symbol",
+        "label_type",
+        "label_value",
+        "label_date",
+        "horizon_days",
+        "event_time",
+        "publication_time",
+        "ingestion_time",
+        "effective_time",
+        "source",
+        "version",
+        "ingestion_job",
+        "checksum",
+    ]
+
     def __init__(self):
         """Initialize the label validator."""
         logger.info("Initialized LabelValidator")
+
+    # ------------------------------------------------------------------
+    # Connection to the actual label engine
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def from_triple_barrier_events(
+        barrier_events: pd.DataFrame,
+        symbol: str,
+        source: str = "triple_barrier_v1",
+        version: str = "tb_v1.0",
+        ingestion_job: str = "unspecified_job",
+        publication_lag: pd.Timedelta = pd.Timedelta(0),
+    ) -> list[Label]:
+        """
+        Build validated `Label` objects directly from
+        `MultiObjectiveLabeler.get_labels(...)` output.
+
+        Args:
+            barrier_events: DataFrame returned by
+                `MultiObjectiveLabeler.get_labels`, indexed by entry time,
+                containing at least: direction_label, actual_return,
+                actual_mfe, actual_mae, actual_duration_bars, first_touch.
+            symbol: Instrument symbol these events belong to.
+            source: Lineage tag identifying the labeling logic used.
+            version: Version tag for the labeling logic.
+            ingestion_job: Identifier of the job/run producing these labels.
+            publication_lag: How long after event_time this label becomes
+                publicly knowable. Defaults to zero (same bar). Set this
+                explicitly for any data source with reporting delay
+                (e.g. corporate actions, delayed corporate filings).
+
+        Returns:
+            List of `Label` objects. This does NOT validate them — call
+            `validate_and_filter` next.
+        """
+        # Use a tz-naive "now" matching the (typically tz-naive) index timestamps
+        # coming out of MultiObjectiveLabeler. If your price index IS tz-aware,
+        # localize this to match before calling this method.
+        now = pd.Timestamp.now()
+        labels: list[Label] = []
+
+        for entry_time, row in barrier_events.iterrows():
+            event_time = pd.Timestamp(entry_time)
+            publication_time = event_time + publication_lag
+            effective_time = publication_time
+            horizon_bars = row.get("actual_duration_bars")
+            horizon_days = int(horizon_bars) if pd.notna(horizon_bars) and horizon_bars > 0 else 1
+
+            try:
+                label = Label(
+                    symbol=symbol,
+                    label_type=LabelType.TRIPLE_BARRIER_DIRECTION,
+                    label_value=float(row["direction_label"]),
+                    label_date=event_time,
+                    horizon_days=horizon_days,
+                    event_time=event_time,
+                    publication_time=publication_time,
+                    effective_time=effective_time,
+                    ingestion_time=now,
+                    source=source,
+                    version=version,
+                    ingestion_job=ingestion_job,
+                    actual_return=float(row.get("actual_return"))
+                    if pd.notna(row.get("actual_return"))
+                    else None,
+                    actual_mfe=float(row.get("actual_mfe"))
+                    if pd.notna(row.get("actual_mfe"))
+                    else None,
+                    actual_mae=float(row.get("actual_mae"))
+                    if pd.notna(row.get("actual_mae"))
+                    else None,
+                    actual_duration_bars=int(horizon_bars) if pd.notna(horizon_bars) else None,
+                )
+                labels.append(label)
+            except Exception as exc:  # noqa: BLE001 — log and skip malformed rows
+                logger.error(f"Failed to construct Label for {symbol} @ {entry_time}: {exc}")
+
+        return labels
+
+    def validate_and_filter(self, labels: list[Label]) -> tuple[list[Label], dict[str, Any]]:
+        """
+        Validate a batch of labels and return only the valid ones.
+
+        This is the method the training pipeline should call — it never
+        returns invalid labels, so callers cannot accidentally train on
+        them even if they forget to check the report.
+
+        Returns:
+            (valid_labels, report) where report mirrors `validate_labels`.
+        """
+        report = self.validate_labels(labels)
+        valid_labels = [label for label in labels if self.validate_label(label)]
+        if report["invalid"] > 0:
+            logger.warning(
+                f"Dropped {report['invalid']}/{report['total']} invalid labels "
+                f"for symbol(s): {sorted({e['symbol'] for e in report['errors']})}"
+            )
+        return valid_labels, report
+
+    # ------------------------------------------------------------------
+    # Core validation (unchanged logic, now actually reachable)
+    # ------------------------------------------------------------------
 
     def validate_label(self, label: Label) -> bool:
         """
@@ -38,29 +169,12 @@ class LabelValidator:
         Returns:
             True if valid, False otherwise
         """
-        # Check required fields
-        required_fields = [
-            "symbol",
-            "label_type",
-            "label_value",
-            "label_date",
-            "horizon_days",
-            "event_time",
-            "publication_time",
-            "ingestion_time",
-            "effective_time",
-            "source",
-            "version",
-            "ingestion_job",
-            "checksum",
-        ]
-
-        for field in required_fields:
+        for field in self.REQUIRED_FIELDS:
             if getattr(label, field, None) is None:
                 logger.error(f"Label validation failed: missing field {field}")
                 return False
 
-        # Validate timestamp ordering
+        # Validate timestamp ordering (causal chain)
         if label.event_time > label.publication_time:
             logger.error("Label validation failed: event_time > publication_time")
             return False
@@ -73,7 +187,7 @@ class LabelValidator:
             logger.error("Label validation failed: effective_time > ingestion_time")
             return False
 
-        # Validate label_date is after event_time
+        # Validate label_date is not before event_time
         label_date = pd.to_datetime(label.label_date).date()
         event_date = pd.to_datetime(label.event_time).date()
         if label_date < event_date:
@@ -88,6 +202,15 @@ class LabelValidator:
         # Validate label_value is finite
         if not np.isfinite(label.label_value):
             logger.error("Label validation failed: label_value is not finite")
+            return False
+
+        # Validate checksum integrity (detects silent mutation/corruption)
+        expected_checksum = label._compute_checksum()
+        if label.checksum != expected_checksum:
+            logger.error(
+                f"Label validation failed: checksum mismatch for {label.symbol} "
+                f"@ {label.label_date} (possible corruption or tampering)"
+            )
             return False
 
         logger.debug(f"Label validation passed for {label.symbol}")
@@ -132,41 +255,21 @@ class LabelValidator:
         Returns:
             True if valid, False otherwise
         """
-        # Check required columns
-        required_cols = [
-            "symbol",
-            "label_type",
-            "label_value",
-            "label_date",
-            "horizon_days",
-            "event_time",
-            "publication_time",
-            "ingestion_time",
-            "effective_time",
-            "source",
-            "version",
-            "ingestion_job",
-            "checksum",
-        ]
-
-        missing_cols = [col for col in required_cols if col not in df.columns]
+        missing_cols = [col for col in self.REQUIRED_FIELDS if col not in df.columns]
         if missing_cols:
             logger.error(f"DataFrame validation failed: missing columns {missing_cols}")
             return False
 
-        # Check for NaN values in critical columns
         critical_cols = ["symbol", "label_type", "label_value", "label_date"]
         for col in critical_cols:
             if df[col].isna().any():
                 logger.error(f"DataFrame validation failed: NaN values in {col}")
                 return False
 
-        # Check for infinite values in label_value
         if np.isinf(df["label_value"]).any():
             logger.error("DataFrame validation failed: infinite values in label_value")
             return False
 
-        # Validate timestamp ordering
         if (df["event_time"] > df["publication_time"]).any():
             logger.error("DataFrame validation failed: event_time > publication_time")
             return False
@@ -215,9 +318,10 @@ class LabelValidator:
         Returns:
             True if valid, False otherwise
         """
-        # Check that publication_time is being used
         if "publication_time" not in feature_data.columns:
-            logger.error("Publication time validation failed: publication_time not in feature data")
+            logger.error(
+                "Publication time validation failed: publication_time not in feature data"
+            )
             return False
 
         if "publication_time" not in label_data.columns:
@@ -238,12 +342,14 @@ class LabelValidator:
         Returns:
             True if no lookahead bias, False otherwise
         """
-        # Merge feature and label data
         merged = pd.merge(
             feature_data, label_data, on=["symbol", "date"], suffixes=("_feature", "_label")
         )
 
-        # Check if feature publication_time is after label event_time
+        if merged.empty:
+            logger.warning("Lookahead bias check skipped: no overlapping symbol/date rows")
+            return True
+
         if (merged["publication_time_feature"] > merged["event_time_label"]).any():
             logger.error("Lookahead bias detected: feature publication after label event")
             return False
@@ -274,26 +380,25 @@ class LabelValidator:
             "valid": True,
         }
 
-        # Check minimum samples
         if stats["count"] < min_samples:
             logger.error(
-                f"Label distribution validation failed: insufficient samples ({stats['count']} < {min_samples})"
+                f"Label distribution validation failed: insufficient samples "
+                f"({stats['count']} < {min_samples})"
             )
             stats["valid"] = False
 
-        # Check for extreme values
         if np.abs(stats["max"]) > 10 or np.abs(stats["min"]) > 10:
             logger.warning(
                 f"Label distribution has extreme values: min={stats['min']}, max={stats['max']}"
             )
 
-        # Check for zero variance
         if stats["std"] == 0:
             logger.error("Label distribution validation failed: zero variance")
             stats["valid"] = False
 
         logger.info(
-            f"Label distribution: mean={stats['mean']:.4f}, std={stats['std']:.4f}, count={stats['count']}"
+            f"Label distribution: mean={stats['mean']:.4f}, std={stats['std']:.4f}, "
+            f"count={stats['count']}"
         )
 
         return stats
@@ -308,19 +413,15 @@ class LabelValidator:
         Returns:
             True if consistent, False otherwise
         """
-        # Group by symbol and check for gaps
-        symbol_dates = {}
+        symbol_dates: dict[str, list] = {}
         for label in labels:
-            if label.symbol not in symbol_dates:
-                symbol_dates[label.symbol] = []
-            symbol_dates[label.symbol].append(label.label_date)
+            symbol_dates.setdefault(label.symbol, []).append(label.label_date)
 
-        # Check for gaps in dates
         for symbol, dates in symbol_dates.items():
             dates_sorted = sorted(dates)
             for i in range(1, len(dates_sorted)):
                 gap = (dates_sorted[i] - dates_sorted[i - 1]).days
-                if gap > 7:  # More than 7 days gap
+                if gap > 7:
                     logger.warning(
                         f"Label consistency warning: {symbol} has {gap}-day gap in labels"
                     )

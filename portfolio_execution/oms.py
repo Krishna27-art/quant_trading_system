@@ -18,7 +18,7 @@ The EMS (Execution Management System) handles HOW to execute them.
 import threading
 import time
 import uuid
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -182,9 +182,20 @@ class PreTradeResult:
 
 
 class WashTradeGuard:
+    """
+    Wash-trade / duplicate-order guard.
+
+    IMPORTANT: dedup expiry uses wall-clock time (time.time()), not
+    time.monotonic(). monotonic() is process-local and resets on restart,
+    so any TTL computed from it becomes meaningless the instant this state
+    is persisted to and restored from the WAL across a crash/restart. All
+    expiry values are wall-clock epoch seconds so dump_state()/load_state()
+    round-trip correctly across process boundaries.
+    """
+
     def __init__(self, dedup_ttl_sec: float = 60.0, max_size: int = 10000):
         self._pending = {}  # symbol -> {'BUY': set(), 'SELL': set()}
-        self._dedup = OrderedDict()
+        self._dedup = OrderedDict()  # order_id -> expiry (wall-clock epoch seconds)
         self._ttl = dedup_ttl_sec
         self._max = max_size
 
@@ -203,7 +214,7 @@ class WashTradeGuard:
         self._pending.get(symbol, {}).get(side.upper(), set()).discard(strategy_id)
 
     def is_duplicate(self, order_id: str) -> bool:
-        now = time.monotonic()
+        now = time.time()
         while self._dedup and next(iter(self._dedup.values())) < now:
             self._dedup.popitem(last=False)
         while len(self._dedup) >= self._max:
@@ -212,6 +223,68 @@ class WashTradeGuard:
             return True
         self._dedup[order_id] = now + self._ttl
         return False
+
+    def dump_state(self) -> dict[str, Any]:
+        """Serializable snapshot for WAL persistence."""
+        now = time.time()
+        return {
+            "dedup": {k: v for k, v in self._dedup.items() if v >= now},
+            "snapshot_at": now,
+        }
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        """Restore dedup state from a WAL-persisted snapshot, dropping expired entries."""
+        now = time.time()
+        dedup = state.get("dedup", {}) or {}
+        self._dedup = OrderedDict(
+            (order_id, expiry) for order_id, expiry in dedup.items() if expiry >= now
+        )
+
+
+class FillIdempotencyStore:
+    """
+    Bounded, TTL-based, WAL-persistable store of processed fill_ids.
+
+    Replaces a plain unbounded `set()` (which leaked memory forever and
+    could not be reconstructed after a crash, meaning a duplicate fill
+    replayed right after restart would be double-applied).
+    """
+
+    def __init__(self, ttl_sec: float = 86400.0, max_size: int = 100000):
+        self._seen: OrderedDict[str, float] = OrderedDict()  # fill_id -> expiry
+        self._ttl = ttl_sec
+        self._max = max_size
+        self._lock = threading.Lock()
+
+    def is_processed(self, fill_id: str) -> bool:
+        with self._lock:
+            now = time.time()
+            while self._seen and next(iter(self._seen.values())) < now:
+                self._seen.popitem(last=False)
+            return fill_id in self._seen
+
+    def mark_processed(self, fill_id: str) -> None:
+        with self._lock:
+            now = time.time()
+            while len(self._seen) >= self._max:
+                self._seen.popitem(last=False)
+            self._seen[fill_id] = now + self._ttl
+
+    def dump_state(self) -> dict[str, Any]:
+        with self._lock:
+            now = time.time()
+            return {
+                "fill_ids": {k: v for k, v in self._seen.items() if v >= now},
+                "snapshot_at": now,
+            }
+
+    def load_state(self, state: dict[str, Any]) -> None:
+        with self._lock:
+            now = time.time()
+            fill_ids = state.get("fill_ids", {}) or {}
+            self._seen = OrderedDict(
+                (fid, expiry) for fid, expiry in fill_ids.items() if expiry >= now
+            )
 
 
 class OrderManagementSystem:
@@ -237,6 +310,9 @@ class OrderManagementSystem:
         max_single_position_pct: float = 0.05,
         max_sector_exposure_pct: float = 0.25,
         nav: float = 10_000_000,  # ₹1 Crore default NAV
+        fill_idempotency_ttl_sec: float = 86400.0,
+        wal_journal: Any | None = None,
+        wal_snapshot_interval_sec: float = 5.0,
     ):
         # Configuration
         self._max_daily_loss_pct = max_daily_loss_pct
@@ -258,22 +334,17 @@ class OrderManagementSystem:
         self._sector_map: dict[str, str] = {}  # Symbol -> Sector mapping
         self._sector_exposures = defaultdict(float)
 
-        # Fill idempotency
-        import threading
-
-        self._processed_fill_ids: set[str] = set()
-        self._fill_id_lock = threading.Lock()
+        # Fill idempotency (crash-durable: see dump_idempotency_snapshot/handle_wal_operation)
+        self._fill_idempotency = FillIdempotencyStore(ttl_sec=fill_idempotency_ttl_sec)
         self._order_locks: dict[str, threading.Lock] = {}
 
         # Recent order tracking for daily reset (bounded to prevent memory leak)
-        from collections import deque
-
         self._recent_order_ids = deque(maxlen=10000)
 
         # Cross-strategy position intent map
         self._pending_intents: dict[str, dict[str, tuple[OrderSide, int]]] = defaultdict(dict)
 
-        # Deduplication and Wash Trade prevention
+        # Deduplication and Wash Trade prevention (crash-durable, see same snapshot path)
         self._wash_guard = WashTradeGuard()
 
         # Callbacks
@@ -292,6 +363,16 @@ class OrderManagementSystem:
                 sebi_client_oi_limit_pct=self._max_single_position_pct,
             )
         )
+
+        # WAL wiring for idempotency-state durability. Without this, the
+        # in-memory dedup/fill-idempotency guards reset to empty on every
+        # crash/restart, so a duplicate order or fill replayed immediately
+        # after recovery would not be caught even though order/position
+        # state itself was correctly restored.
+        self._wal_journal = wal_journal
+        self._wal_snapshot_interval_sec = wal_snapshot_interval_sec
+        self._last_wal_snapshot_at: float = 0.0
+        self._wal_snapshot_lock = threading.Lock()
 
         logger.info(f"OMS initialized | NAV=₹{nav:,.0f} | MaxDailyLoss={max_daily_loss_pct:.1%}")
 
@@ -441,6 +522,7 @@ class OrderManagementSystem:
                     f"[{symbol}] Order VALIDATED | {side.value} {order.quantity}@{price:.2f} | "
                     f"Setup={setup_type} | Confidence={confidence_score:.1f}"
                 )
+            self._maybe_snapshot_idempotency_state()
         else:
             order.update_status(OrderStatus.REJECTED, result.reason)
             order.rejection_reason = result.reason
@@ -569,13 +651,12 @@ class OrderManagementSystem:
     def on_fill(
         self, order_id: str, filled_qty: int, fill_price: float, fill_id: str = None
     ) -> None:
-        """Handle a fill event from the EMS/broker with idempotency."""
+        """Handle a fill event from the EMS/broker with crash-durable idempotency."""
         if fill_id:
-            with self._fill_id_lock:
-                if fill_id in self._processed_fill_ids:
-                    logger.warning(f"Ignoring duplicate fill_id {fill_id} for order {order_id}")
-                    return
-                self._processed_fill_ids.add(fill_id)
+            if self._fill_idempotency.is_processed(fill_id):
+                logger.warning(f"Ignoring duplicate fill_id {fill_id} for order {order_id}")
+                return
+            self._fill_idempotency.mark_processed(fill_id)
 
         order = self._orders.get(order_id)
         if not order:
@@ -627,6 +708,8 @@ class OrderManagementSystem:
             f"[{order.symbol}] FILL | {order.side.value} {filled_qty}@{fill_price:.2f} | "
             f"Total filled: {order.filled_quantity}/{order.quantity}"
         )
+
+        self._maybe_snapshot_idempotency_state()
 
     def mark_cancelled(self, order_id: str, reason: str = "Cancelled") -> None:
         """Mark an order cancelled and release reserved borrow if required."""
@@ -870,8 +953,59 @@ class OrderManagementSystem:
             "nav": self._nav,
         }
 
+    # ------------------------------------------------------------------
+    # Crash-durable idempotency state (WAL integration)
+    # ------------------------------------------------------------------
+
+    def dump_idempotency_snapshot(self) -> dict[str, Any]:
+        """
+        Full snapshot of dedup + fill-idempotency state, meant to be written
+        to the WAL as an "idempotency_snapshot" operation. Call this after
+        every order creation / fill, or on a timer — see
+        `_maybe_snapshot_idempotency_state`.
+        """
+        return {
+            "wash_guard": self._wash_guard.dump_state(),
+            "fill_idempotency": self._fill_idempotency.dump_state(),
+        }
+
+    def _maybe_snapshot_idempotency_state(self) -> None:
+        """
+        Write an idempotency snapshot to the WAL if enough time has passed
+        and a WAL journal was provided. Throttled so every single order/fill
+        doesn't force a disk write — recovery only needs the *latest*
+        snapshot, not every intermediate one.
+        """
+        if self._wal_journal is None:
+            return
+
+        with self._wal_snapshot_lock:
+            now = time.time()
+            if now - self._last_wal_snapshot_at < self._wal_snapshot_interval_sec:
+                return
+            self._last_wal_snapshot_at = now
+
+        try:
+            self._wal_journal.write("idempotency_snapshot", self.dump_idempotency_snapshot())
+        except Exception as e:
+            logger.error(f"Failed to write idempotency snapshot to WAL: {e}")
+
     def handle_wal_operation(self, operation: str, payload: dict[str, Any]) -> None:
         """Reconstruct state from WAL log entry during crash recovery."""
+        if operation == "idempotency_snapshot":
+            wash_state = payload.get("wash_guard")
+            if wash_state:
+                self._wash_guard.load_state(wash_state)
+            fill_state = payload.get("fill_idempotency")
+            if fill_state:
+                self._fill_idempotency.load_state(fill_state)
+            logger.info(
+                "WAL Replay: Restored idempotency snapshot | "
+                f"dedup_entries={len(self._wash_guard._dedup)} | "
+                f"fill_ids={len(self._fill_idempotency._seen)}"
+            )
+            return
+
         if operation == "order_update":
             order_id = payload.get("order_id")
             if not order_id:

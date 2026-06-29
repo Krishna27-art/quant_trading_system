@@ -1,0 +1,468 @@
+openapi: 3.0.0
+info:
+  title: Institutional Quant Research OS API
+  description: |
+    API for the Institutional Quantitative Research Operating System.
+    Provides endpoints for data ingestion, feature computation, model training,
+    backtesting, risk management, and execution.
+  version: 1.0.0
+  contact:
+    name: Quant Research Team
+    email: quant@example.com
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://api.quant-research.example.com
+    description: Production server
+
+tags:
+  - name: Data Ingestion
+    description: Data ingestion and management endpoints
+  - name: Features
+    description: Feature computation and serving endpoints
+  - name: Models
+    description: Model training and inference endpoints
+  - name: Backtesting
+    description: Backtesting and performance analysis endpoints
+  - name: Risk
+    description: Risk management and monitoring endpoints
+  - name: Execution
+    description: Order execution and management endpoints
+
+paths:
+  /api/v1/data/ingest:
+    post:
+      tags:
+        - Data Ingestion
+      summary: Ingest market data
+      description: Ingest market data from external sources
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symbol:
+                  type: string
+                  example: "NIFTY"
+                start_date:
+                  type: string
+                  format: date
+                  example: "2024-01-01"
+                end_date:
+                  type: string
+                  format: date
+                  example: "2024-01-31"
+                data_type:
+                  type: string
+                  enum: [equity, options, futures, indices]
+                  example: "equity"
+      responses:
+        '200':
+          description: Data ingestion started successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+                  message:
+                    type: string
+
+  /api/v1/data/{symbol}/history:
+    get:
+      tags:
+        - Data Ingestion
+      summary: Get historical data
+      description: Retrieve historical data for a symbol
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: start_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Historical data retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbol:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      type: object
+
+  /api/v1/features/compute:
+    post:
+      tags:
+        - Features
+      summary: Compute features
+      description: Compute features for given symbols and date range
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symbols:
+                  type: array
+                  items:
+                    type: string
+                features:
+                  type: array
+                  items:
+                    type: string
+                start_date:
+                  type: string
+                  format: date
+                end_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Features computed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+
+  /api/v1/features/online:
+    post:
+      tags:
+        - Features
+      summary: Get online features
+      description: Get latest features for online serving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symbols:
+                  type: array
+                  items:
+                    type: string
+                features:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Online features retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  features:
+                    type: object
+
+  /api/v1/models/train:
+    post:
+      tags:
+        - Models
+      summary: Train a model
+      description: Train a machine learning model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model_type:
+                  type: string
+                  enum: [lightgbm, xgboost, random_forest, neural_network]
+                features:
+                  type: array
+                  items:
+                    type: string
+                target:
+                  type: string
+                params:
+                  type: object
+      responses:
+        '200':
+          description: Model training started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+
+  /api/v1/models/predict:
+    post:
+      tags:
+        - Models
+      summary: Get predictions
+      description: Get predictions from a trained model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model_id:
+                  type: string
+                features:
+                  type: object
+      responses:
+        '200':
+          description: Predictions generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  predictions:
+                    type: array
+                  confidence:
+                    type: array
+
+  /api/v1/backtest/run:
+    post:
+      tags:
+        - Backtesting
+      summary: Run backtest
+      description: Run a backtest with given strategy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                strategy:
+                  type: string
+                start_date:
+                  type: string
+                  format: date
+                end_date:
+                  type: string
+                  format: date
+                initial_capital:
+                  type: number
+                  format: float
+                params:
+                  type: object
+      responses:
+        '200':
+          description: Backtest started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+
+  /api/v1/backtest/results/{job_id}:
+    get:
+      tags:
+        - Backtesting
+      summary: Get backtest results
+      description: Retrieve backtest results
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Backtest results retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+                  results:
+                    type: object
+
+  /api/v1/risk/metrics:
+    get:
+      tags:
+        - Risk
+      summary: Get risk metrics
+      description: Get current risk metrics for portfolio
+      responses:
+        '200':
+          description: Risk metrics retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  var:
+                    type: number
+                  max_drawdown:
+                    type: number
+                  exposure:
+                    type: number
+                  concentration:
+                    type: number
+
+  /api/v1/risk/check-order:
+    post:
+      tags:
+        - Risk
+      summary: Check order against risk limits
+      description: Validate order against risk limits
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symbol:
+                  type: string
+                side:
+                  type: string
+                  enum: [buy, sell]
+                quantity:
+                  type: integer
+                price:
+                  type: number
+                  format: float
+      responses:
+        '200':
+          description: Order check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  is_allowed:
+                    type: boolean
+                  violations:
+                    type: array
+                    items:
+                      type: object
+
+  /api/v1/execution/submit-order:
+    post:
+      tags:
+        - Execution
+      summary: Submit order
+      description: Submit an order for execution
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symbol:
+                  type: string
+                side:
+                  type: string
+                  enum: [buy, sell]
+                quantity:
+                  type: integer
+                order_type:
+                  type: string
+                  enum: [market, limit, stop]
+                price:
+                  type: number
+                  format: float
+      responses:
+        '200':
+          description: Order submitted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order_id:
+                    type: string
+                  status:
+                    type: string
+
+  /api/v1/execution/order/{order_id}:
+    get:
+      tags:
+        - Execution
+      summary: Get order status
+      description: Get status of an order
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order status retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order_id:
+                    type: string
+                  status:
+                    type: string
+                  fills:
+                    type: array
+                    items:
+                      type: object
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        details:
+          type: object
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+security:
+  - ApiKeyAuth: []

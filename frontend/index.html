@@ -1,0 +1,1780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; default-src 'self'; connect-src 'self' http://localhost:8000 http://127.0.0.1:8000 ws://localhost:8000 ws://127.0.0.1:8000; img-src 'self' data:;">
+<title>QT/IN — Institutional Research OS</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+/* ─── DESIGN TOKENS (BLOOMBERG STYLE) ─────────────────────────────────────── */
+:root {
+  --bg-base:    #0a0a0c;
+  --bg-panel:   #111115;
+  --bg-widget:  #16161c;
+  --bg-input:   #1a1a24;
+  --border:     #22222b;
+  --border-act: #3b82f6;
+  
+  --c-text:     #d1d5db;
+  --c-muted:    #6b7280;
+  --c-accent:   #0ea5e9;
+  --c-green:    #10b981;
+  --c-green-bg: #064e3b;
+  --c-red:      #f43f5e;
+  --c-red-bg:   #4c0519;
+  --c-amber:    #fbbf24;
+  --c-amber-bg: #451a03;
+  --c-cyan:     #22d3ee;
+  
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Inter', sans-serif;
+  --r: 2px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg-base);
+  color: var(--c-text);
+  font-family: var(--sans);
+  font-size: 11px;
+  height: 100vh;
+  overflow: auto; /* Allow scrolling when zoomed in/out */
+  display: flex;
+  flex-direction: column;
+}
+
+button { cursor: pointer; border: none; background: transparent; color: inherit; font-family: inherit; }
+input, select { font-family: var(--mono); color: var(--c-text); background: var(--bg-input); border: 1px solid var(--border); padding: 3px 6px; border-radius: var(--r); outline: none; }
+input:focus { border-color: var(--border-act); }
+
+/* scrollbars */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ─── APP STRUCTURE ──────────────────────────────────────────────────────── */
+#app-header {
+  height: 38px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+#session-bar {
+  height: 26px;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 16px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--c-muted);
+  flex-shrink: 0;
+}
+
+#main-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0; /* Important for scaling inside flexbox */
+}
+
+#sidebar {
+  width: 90px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+#content-pane {
+  flex: 1;
+  overflow-y: auto;
+  position: relative;
+  min-width: 0;
+}
+
+/* ─── GENERAL MODULE PANEL STYLING ───────────────────────────────────────── */
+.view {
+  display: none;
+  height: 100%;
+  padding: 12px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.view.active { display: flex; flex-direction: column; gap: 12px; }
+
+.grid-3col {
+  display: grid;
+  grid-template-columns: 320px 1fr 340px;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+}
+
+/* Responsive wrap on zoom or smaller screens */
+@media (max-width: 1024px) {
+  .grid-3col {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+.panel-header {
+  background: var(--bg-widget);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-weight: bold;
+  font-size: 11px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.panel-body {
+  padding: 10px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+/* Tables style */
+table { width: 100%; border-collapse: collapse; text-align: left; font-family: var(--mono); font-size: 10.5px; }
+th { color: var(--c-muted); font-weight: normal; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+td { padding: 5px 6px; border-bottom: 1px dashed var(--border); }
+tr:hover { background: var(--bg-widget); }
+
+/* Color coding helper utilities */
+.val-up { color: var(--c-green) !important; }
+.val-dn { color: var(--c-red) !important; }
+.val-warn { color: var(--c-amber) !important; }
+.val-info { color: var(--c-cyan) !important; }
+
+.chip {
+  padding: 1px 4px;
+  border-radius: var(--r);
+  font-size: 9px;
+  font-weight: bold;
+}
+.chip-green { background: var(--c-green-bg); color: var(--c-green); }
+.chip-red { background: var(--c-red-bg); color: var(--c-red); }
+.chip-amber { background: var(--c-amber-bg); color: var(--c-amber); }
+
+/* Chart Containers to prevent distortion */
+.chart-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 120px;
+  flex: 1;
+}
+
+/* ─── SIDEBAR TAB NAVIGATION ─────────────────────────────────────────────── */
+.nav-tab {
+  height: 50px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--border);
+  font-size: 9px;
+  font-family: var(--mono);
+  color: var(--c-muted);
+  gap: 3px;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.nav-tab:hover { background: var(--bg-widget); color: var(--c-text); }
+.nav-tab.active {
+  background: var(--bg-widget);
+  color: var(--border-act);
+  border-left: 2px solid var(--border-act);
+}
+
+/* ─── COMMAND PALETTE DIALOG ─────────────────────────────────────────────── */
+#cmd-dialog {
+  display: none;
+  position: fixed;
+  top: 15%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 500px;
+  max-width: 90%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-act);
+  border-radius: 4px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.8);
+  z-index: 1000;
+  font-family: var(--mono);
+}
+#cmd-dialog-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 12px;
+  font-size: 13px;
+  background: transparent;
+  color: var(--c-text);
+  outline: none;
+}
+.cmd-suggestion {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #1a1a24;
+}
+.cmd-suggestion:hover, .cmd-suggestion.active {
+  background: var(--bg-widget);
+  color: var(--c-accent);
+}
+
+/* Overlay backdrops */
+#overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 999;
+}
+</style>
+</head>
+<body>
+
+<!-- ─── COMMAND BAR & LOGO ─── -->
+<div id="app-header">
+  <div class="logo">QT/IN<em> — OSv2</em></div>
+  <button id="cmd-bar-trigger" style="background: var(--bg-widget); border: 1px solid var(--border); padding: 4px 10px; border-radius: var(--r); font-family: var(--mono); font-size: 11px;">
+    Press <kbd style="background: var(--bg-input); padding: 1px 3px;">⌘K</kbd> or click to search...
+  </button>
+  <div style="margin-left: auto; display: flex; gap: 8px;">
+    <button onclick="toggleHelp()" style="color: var(--c-muted); font-size: 12px;">[?] HELP</button>
+  </div>
+</div>
+
+<!-- ─── SESSION BAR ─── -->
+<div id="session-bar">
+  <div>REGIME: <span id="sess-regime" class="val-info">N/A</span></div>
+  <div>MODEL FRESHNESS: <span id="sess-freshness" class="val-up">N/A</span></div>
+  <div>ACTIVE PREDICTIONS: <span id="sess-active-count">0</span></div>
+  <div>VIX LEVEL: <span id="sess-vix" class="val-warn">14.8</span></div>
+  <div style="margin-left: auto;" id="sess-clock">IST 00:00</div>
+  <div id="sess-market-status" class="val-dn">○ CLOSED</div>
+</div>
+
+<!-- ─── APP VIEW SHELL ─── -->
+<div id="main-container">
+  
+  <!-- Sidebar Navigation -->
+  <div id="sidebar">
+    <button onclick="navigate('cockpit')" id="tab-cockpit" class="nav-tab active">
+      <span>🖥️</span><span>COCKPIT</span>
+    </button>
+    <button onclick="navigate('markets')" id="tab-markets" class="nav-tab">
+      <span>📈</span><span>MARKETS</span>
+    </button>
+    <button onclick="navigate('signals')" id="tab-signals" class="nav-tab">
+      <span>📡</span><span>SIGNALS</span>
+    </button>
+    <button onclick="navigate('backtest')" id="tab-backtest" class="nav-tab">
+      <span>🧪</span><span>BACKTEST</span>
+    </button>
+    <button onclick="navigate('train')" id="tab-train" class="nav-tab">
+      <span>⚙️</span><span>TRAIN</span>
+    </button>
+    <button onclick="navigate('paper')" id="tab-paper" class="nav-tab">
+      <span>💼</span><span>PAPER</span>
+    </button>
+    <button onclick="navigate('calibration')" id="tab-calibration" class="nav-tab">
+      <span>📐</span><span>CALIB</span>
+    </button>
+    <button onclick="navigate('system')" id="tab-system" class="nav-tab">
+      <span>🛠️</span><span>SYSTEM</span>
+    </button>
+  </div>
+
+  <!-- Content pane -->
+  <div id="content-pane">
+
+    <!-- 1. COCKPIT VIEW -->
+    <div id="view-cockpit" class="view active">
+      <div class="grid-3col">
+        
+        <!-- Column 1: Market Regime Panel -->
+        <div class="panel">
+          <div class="panel-header">MARKET REGIME</div>
+          <div class="panel-body">
+            <div>
+              <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span>HMM Regime State</span>
+                <span id="regime-desc" class="val-info">Sideways / Range</span>
+              </div>
+              <div id="regime-bar-container" style="height:12px; background:var(--bg-input); border-radius:var(--r); display:flex; overflow:hidden;">
+                <div style="width:20%; background:#f43f5e;" title="Bear Trend"></div>
+                <div style="width:50%; background:#fbbf24;" title="Sideways"></div>
+                <div style="width:30%; background:#10b981;" title="Bull Trend"></div>
+              </div>
+            </div>
+            
+            <div style="margin-top:8px;">
+              <div style="margin-bottom:4px;">Regime Blocks (Last 20 sessions)</div>
+              <div id="regime-blocks" style="display:grid; grid-template-columns: repeat(10, 1fr); gap: 4px;">
+                <!-- Filled dynamically -->
+              </div>
+            </div>
+            
+            <div style="margin-top:12px;">
+              <div style="margin-bottom:6px;">Market Indices Confluence</div>
+              <table id="indices-table">
+                <!-- Filled dynamically -->
+              </table>
+            </div>
+
+            <div style="margin-top:12px; display:flex; flex-direction:column; flex:1; min-height:120px;">
+              <div>FII/DII Net Flow (5-day rolling, Cr)</div>
+              <div class="chart-container">
+                <canvas id="chart-fii-flow"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Column 2: Signal Command Center -->
+        <div class="panel">
+          <div class="panel-header">SIGNAL COMMAND CENTER</div>
+          <div class="panel-body" style="padding:0;">
+            <!-- Main Chart Area -->
+            <div style="height: 250px; min-height: 200px; border-bottom: 1px solid var(--border); position: relative;">
+              <canvas id="main-cockpit-chart"></canvas>
+            </div>
+            <div style="padding: 10px; display:flex; flex-direction:column; gap:8px; flex:1; overflow-y:auto; min-height:0;">
+              <div style="font-weight:bold; font-size:11px;">Active Signal Dashboard</div>
+              <table id="cockpit-signals-table">
+                <thead>
+                  <tr>
+                    <th>SYMBOL</th>
+                    <th>DIR</th>
+                    <th>ENTRY ZONE</th>
+                    <th>TARGET</th>
+                    <th>STOP LOSS</th>
+                    <th>R:R</th>
+                    <th>CONFIDENCE</th>
+                    <th>STATUS</th>
+                  </tr>
+                </thead>
+                <tbody id="cockpit-signals-body">
+                  <!-- Filled dynamically -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Column 3: Model Health Monitor -->
+        <div class="panel">
+          <div class="panel-header">MODEL HEALTH MONITOR</div>
+          <div class="panel-body">
+            <div id="model-health-cards" style="display:flex; flex-direction:column; gap:10px; min-height:0; overflow-y:auto;">
+              <!-- Cards dynamic -->
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 2. MARKETS VIEW -->
+    <div id="view-markets" class="view">
+      <div class="grid-3col">
+        
+        <!-- Left: Stock list -->
+        <div class="panel">
+          <div class="panel-header">SYMBOLS LIST</div>
+          <div class="panel-body" style="padding:0;">
+            <div style="padding:8px; border-bottom:1px solid var(--border);">
+              <input type="text" id="market-search" placeholder="Search symbol..." style="width:100%;">
+            </div>
+            <table id="markets-grid-table">
+              <thead>
+                <tr>
+                  <th>SYMBOL</th>
+                  <th>PRICE</th>
+                  <th>CHG%</th>
+                  <th>CONF</th>
+                  <th>WIN%</th>
+                  <th>REGIME</th>
+                </tr>
+              </thead>
+              <tbody id="markets-grid-body">
+                <!-- Filled dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Center: Confluence Charts & Details -->
+        <div class="panel">
+          <div class="panel-header" id="market-details-title">SYMBOL CONFLUENCE</div>
+          <div class="panel-body">
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; height: 180px; min-height:150px;">
+              <div style="border:1px solid var(--border); background:var(--bg-widget); padding:4px; display:flex; flex-direction:column;">
+                <div style="font-size:9px; color:var(--c-muted); text-align:center;">15 MINUTE</div>
+                <div class="chart-container"><canvas id="chart-confluence-15m"></canvas></div>
+              </div>
+              <div style="border:1px solid var(--border); background:var(--bg-widget); padding:4px; display:flex; flex-direction:column;">
+                <div style="font-size:9px; color:var(--c-muted); text-align:center;">DAILY</div>
+                <div class="chart-container"><canvas id="chart-confluence-daily"></canvas></div>
+              </div>
+              <div style="border:1px solid var(--border); background:var(--bg-widget); padding:4px; display:flex; flex-direction:column;">
+                <div style="font-size:9px; color:var(--c-muted); text-align:center;">WEEKLY</div>
+                <div class="chart-container"><canvas id="chart-confluence-weekly"></canvas></div>
+              </div>
+            </div>
+
+            <div style="margin-top:12px; display:grid; grid-template-columns: 1fr 1fr; gap:10px; flex:1; min-height:180px;">
+              <div class="panel">
+                <div class="panel-header">SHAP VALUES (WHY THE MODEL FIRED)</div>
+                <div class="panel-body" style="padding:5px;">
+                  <div class="chart-container"><canvas id="chart-shap-values"></canvas></div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">SUPPORT & RESISTANCE</div>
+                <div class="panel-body">
+                  <table id="levels-table">
+                    <!-- Dynamic -->
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Feature Inspector -->
+        <div class="panel">
+          <div class="panel-header">FEATURE INSPECTOR</div>
+          <div class="panel-body" style="padding:0;">
+            <table id="feature-inspector-table">
+              <thead>
+                <tr>
+                  <th>FEATURE NAME</th>
+                  <th>VALUE</th>
+                  <th>STATE</th>
+                </tr>
+              </thead>
+              <tbody id="feature-inspector-body">
+                <!-- Dynamic -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 3. SIGNALS VIEW -->
+    <div id="view-signals" class="view">
+      <!-- Performance Attribution row -->
+      <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; height: 160px; min-height:140px; flex-shrink:0;">
+        <div class="panel">
+          <div class="panel-header">WIN RATE BY REGIME</div>
+          <div class="panel-body" style="padding:5px;">
+            <div class="chart-container"><canvas id="chart-signals-regime"></canvas></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">WIN RATE BY SECTOR</div>
+          <div class="panel-body" style="padding:5px;">
+            <div class="chart-container"><canvas id="chart-signals-sector"></canvas></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">CONFIDENCE CALIBRATION BUCKETS</div>
+          <div class="panel-body" style="padding:5px;">
+            <div class="chart-container"><canvas id="chart-signals-confidence"></canvas></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">VIX RISK THRESHOLDS</div>
+          <div class="panel-body" style="padding:5px;">
+            <div class="chart-container"><canvas id="chart-signals-vix"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Signals attribution journals -->
+      <div class="grid-3col">
+        <div class="panel" style="grid-column: span 2;">
+          <div class="panel-header">ACTIVE SIGNALS LOGGER</div>
+          <div class="panel-body" style="padding:0;">
+            <table id="signals-active-table">
+              <thead>
+                <tr>
+                  <th>DATE</th>
+                  <th>SYMBOL</th>
+                  <th>PIPELINE</th>
+                  <th>DIRECTION</th>
+                  <th>CONFIDENCE</th>
+                  <th>R:R</th>
+                  <th>STATUS</th>
+                </tr>
+              </thead>
+              <tbody id="signals-active-body">
+                <!-- Dynamic -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">BAD TRADE ANATOMY</div>
+          <div class="panel-body" id="bad-trade-anatomy-body">
+            <div style="color:var(--c-muted); text-align:center; margin-top:20px;">
+              Select a losing signal from the Outcomes list below to diagnose execution drift and structural feature shifts.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Outcomes Journal -->
+      <div class="panel" style="height: 180px; min-height: 150px; flex-shrink:0;">
+        <div class="panel-header">OUTCOME JOURNAL (LAST 50 SETTLED PREDICTIONS)</div>
+        <div class="panel-body" style="padding:0;">
+          <table id="outcomes-journal-table">
+            <thead>
+              <tr>
+                <th>DATE</th>
+                <th>SYMBOL</th>
+                <th>DIRECTION</th>
+                <th>TARGET</th>
+                <th>STOP LOSS</th>
+                <th>OUTCOME</th>
+                <th>DIAGNOSTIC</th>
+              </tr>
+            </thead>
+            <tbody id="outcomes-journal-body">
+              <!-- Dynamic -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. BACKTEST VIEW -->
+    <div id="view-backtest" class="view">
+      <div class="grid-3col">
+        
+        <!-- Left: Backtest configs -->
+        <div class="panel">
+          <div class="panel-header">BACKTEST DESIGNER</div>
+          <div class="panel-body">
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              <label>Model Pipeline</label>
+              <select id="bt-model">
+                <option value="intraday">Intraday Ensemble v2.0</option>
+                <option value="swing">Swing LightGBM v1.5</option>
+                <option value="positional">Positional LSTM v1.0</option>
+              </select>
+
+              <label>Symbol Universe</label>
+              <select id="bt-universe">
+                <option value="nifty50">NIFTY 50</option>
+                <option value="nifty100">NIFTY 100</option>
+                <option value="custom">Custom (Selected list)</option>
+              </select>
+
+              <label>Capital allocation (₹)</label>
+              <input type="number" id="bt-capital" value="1000000">
+
+              <label>Risk Sizing Mode</label>
+              <select id="bt-risk-mode">
+                <option value="fixed">Fixed size (₹100,000 / trade)</option>
+                <option value="atr">ATR-Based Volatility Adjuster</option>
+                <option value="kelly">Dynamic Kelly Criterion</option>
+              </select>
+
+              <label>Slippage & Spread model</label>
+              <select id="bt-slippage">
+                <option value="2bps">2 bps (Liquid Multicast)</option>
+                <option value="5bps">5 bps (Standard NSE Brokerage)</option>
+                <option value="10bps">10 bps (High Volatility Spread)</option>
+              </select>
+
+              <button onclick="runBacktestSimulation()" style="margin-top:12px; background:var(--c-green-bg); color:var(--c-green); padding:8px; border-radius:var(--r); font-weight:bold; border:1px solid var(--c-green);">
+                RUN SIMULATED BACKTEST
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Center: Backtest results and charts -->
+        <div class="panel">
+          <div class="panel-header">BACKTEST PERFORMANCE REPORT</div>
+          <div class="panel-body">
+            <div style="height: 180px; border-bottom:1px solid var(--border); margin-bottom:10px; min-height:150px;">
+              <div class="chart-container"><canvas id="bt-equity-chart"></canvas></div>
+            </div>
+            
+            <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:8px;">
+              <div style="background:var(--bg-widget); padding:6px; border:1px solid var(--border); border-radius:var(--r);">
+                <div style="color:var(--c-muted);">TOTAL RETURN</div>
+                <div id="bt-metric-return" style="font-size:14px; font-weight:bold;" class="val-up">N/A</div>
+              </div>
+              <div style="background:var(--bg-widget); padding:6px; border:1px solid var(--border); border-radius:var(--r);">
+                <div style="color:var(--c-muted);">SHARPE RATIO</div>
+                <div id="bt-metric-sharpe" style="font-size:14px; font-weight:bold;" class="val-info">N/A</div>
+              </div>
+              <div style="background:var(--bg-widget); padding:6px; border:1px solid var(--border); border-radius:var(--r);">
+                <div style="color:var(--c-muted);">MAX DRAWDOWN</div>
+                <div id="bt-metric-mdd" style="font-size:14px; font-weight:bold;" class="val-dn">N/A</div>
+              </div>
+              <div style="background:var(--bg-widget); padding:6px; border:1px solid var(--border); border-radius:var(--r);">
+                <div style="color:var(--c-muted);">WIN RATE</div>
+                <div id="bt-metric-winrate" style="font-size:14px; font-weight:bold;">N/A</div>
+              </div>
+            </div>
+
+            <!-- Walk Forward Grid -->
+            <div style="margin-top:12px;">
+              <div style="font-weight:bold; font-size:11px; margin-bottom:4px;">WALK-FORWARD OUT-OF-SAMPLE CONFLUENCE GRID</div>
+              <table id="walk-forward-table">
+                <thead>
+                  <tr>
+                    <th>TRAINING WINDOW</th>
+                    <th>TEST WINDOW (OUT-OF-SAMPLE)</th>
+                    <th>SHARPE</th>
+                    <th>MAX DD</th>
+                    <th>WIN RATE</th>
+                    <th>OUTCOME</th>
+                  </tr>
+                </thead>
+                <tbody id="walk-forward-body">
+                  <!-- Dynamic -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Monthly Heatmap calendar -->
+        <div class="panel">
+          <div class="panel-header">MONTHLY PERFORMANCE GRID</div>
+          <div class="panel-body" style="padding:5px;">
+            <table id="monthly-heatmap-table" style="text-align:center;">
+              <!-- Dynamic -->
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 5. TRAIN / MLOPS VIEW -->
+    <div id="view-train" class="view">
+      <div class="grid-3col">
+        
+        <!-- Left: Model Registry -->
+        <div class="panel">
+          <div class="panel-header">MODEL REGISTRY</div>
+          <div class="panel-body">
+            <div style="display:flex; flex-direction:column; gap:10px;" id="model-registry-list">
+              <!-- Dynamic -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Center: Training Monitor -->
+        <div class="panel">
+          <div class="panel-header">TRAINING RUN MONITOR</div>
+          <div class="panel-body">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span>Retrain Champion Ensemble</span>
+              <button onclick="triggerModelTraining()" style="background:var(--border-act); color:white; padding:4px 10px; border-radius:var(--r);">
+                Retrain Now
+              </button>
+            </div>
+            
+            <div id="training-progress-container" style="display:none; margin-top:10px;">
+              <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                <span>Epoch / Folds Progress</span>
+                <span id="training-progress-text">0%</span>
+              </div>
+              <div style="height:8px; background:var(--bg-input); border-radius:var(--r); overflow:hidden;">
+                <div id="training-progress-bar" style="width:0%; height:100%; background:var(--border-act);"></div>
+              </div>
+            </div>
+
+            <div style="height: 180px; margin-top:12px; min-height:150px;">
+              <div class="chart-container"><canvas id="chart-training-loss"></canvas></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Data Pipeline Status -->
+        <div class="panel">
+          <div class="panel-header">DATA PIPELINE FLOW STATUS</div>
+          <div class="panel-body">
+            <div style="display:flex; flex-direction:column; gap:8px;" id="data-pipeline-status">
+              <!-- Dynamic -->
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 6. PAPER TRADING VIEW -->
+    <div id="view-paper" class="view">
+      <!-- Portfolio header cards -->
+      <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; height:60px; min-height:50px; flex-shrink:0;">
+        <div style="background:var(--bg-panel); border:1px solid var(--border); padding:6px 12px; border-radius:var(--r);">
+          <div style="color:var(--c-muted); font-size:10px;">PORTFOLIO VALUE</div>
+          <div id="paper-value" style="font-size:14px; font-weight:bold;">₹5,000,000.00</div>
+        </div>
+        <div style="background:var(--bg-panel); border:1px solid var(--border); padding:6px 12px; border-radius:var(--r);">
+          <div style="color:var(--c-muted); font-size:10px;">TODAY'S P&L</div>
+          <div id="paper-pnl" style="font-size:14px; font-weight:bold;" class="val-up">₹0.00</div>
+        </div>
+        <div style="background:var(--bg-panel); border:1px solid var(--border); padding:6px 12px; border-radius:var(--r);">
+          <div style="color:var(--c-muted); font-size:10px;">DEPLOYED CAP / UNUSED</div>
+          <div id="paper-deployed" style="font-size:14px; font-weight:bold;">₹0.00 / ₹5,000,000.00</div>
+        </div>
+        <div style="background:var(--bg-panel); border:1px solid var(--border); padding:6px 12px; border-radius:var(--r);">
+          <div style="color:var(--c-muted); font-size:10px;">PORTFOLIO BETA / DELTA</div>
+          <div id="paper-risk-metrics" style="font-size:14px; font-weight:bold;">β 0.85 / δ +150</div>
+        </div>
+      </div>
+
+      <!-- Positions blotter -->
+      <div class="panel" style="flex: 1; min-height:200px;">
+        <div class="panel-header">OPEN POSITIONS BLOTTER</div>
+        <div class="panel-body" style="padding:0;">
+          <table id="paper-positions-table">
+            <thead>
+              <tr>
+                <th>SYMBOL</th>
+                <th>SIDE</th>
+                <th>ENTRY DATE</th>
+                <th>ENTRY PRICE</th>
+                <th>CURRENT PRICE</th>
+                <th>UNREALIZED P&L</th>
+                <th>STOP LOSS</th>
+                <th>TARGET</th>
+                <th>ACTIONS</th>
+              </tr>
+            </thead>
+            <tbody id="paper-positions-body">
+              <!-- Dynamic -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Closed trades blotter -->
+      <div class="panel" style="height: 180px; min-height: 150px; flex-shrink:0;">
+        <div class="panel-header">CLOSED PAPER TRADES LOG</div>
+        <div class="panel-body" style="padding:0;">
+          <table id="paper-closed-table">
+            <thead>
+              <tr>
+                <th>CLOSE DATE</th>
+                <th>SYMBOL</th>
+                <th>SIDE</th>
+                <th>QTY</th>
+                <th>REALIZED P&L</th>
+                <th>RESULT</th>
+              </tr>
+            </thead>
+            <tbody id="paper-closed-body">
+              <!-- Dynamic -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 7. CALIBRATION VIEW -->
+    <div id="view-calibration" class="view">
+      <div class="grid-3col" style="grid-template-columns: 1fr 1fr 300px;">
+        
+        <!-- Left: Reliability diagram -->
+        <div class="panel">
+          <div class="panel-header">RELIABILITY DIAGRAM & CALIBRATION DIAGRAM</div>
+          <div class="panel-body" style="padding:10px;">
+            <div style="height: 250px; min-height:200px;">
+              <div class="chart-container"><canvas id="chart-calibration-curve"></canvas></div>
+            </div>
+            
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; margin-top:12px;">
+              <div style="background:var(--bg-widget); padding:8px; border:1px solid var(--border); border-radius:var(--r); text-align:center;">
+                <div style="color:var(--c-muted);">BRIER SCORE</div>
+                <div id="calib-brier" style="font-size:16px; font-weight:bold;" class="val-info">0.038</div>
+              </div>
+              <div style="background:var(--bg-widget); padding:8px; border:1px solid var(--border); border-radius:var(--r); text-align:center;">
+                <div style="color:var(--c-muted);">CALIBRATION ERROR (ECE)</div>
+                <div id="calib-ece" style="font-size:16px; font-weight:bold;" class="val-up">2.4%</div>
+              </div>
+              <div style="background:var(--bg-widget); padding:8px; border:1px solid var(--border); border-radius:var(--r); text-align:center;">
+                <button onclick="triggerIsotonicRecalibration()" style="background:var(--border-act); color:white; font-size:10px; width:100%; height:100%; border-radius:var(--r);">
+                  RUN ISOTONIC RECALIB
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Center: Confidence distribution -->
+        <div class="panel">
+          <div class="panel-header">CONFIDENCE SCORE DISTRIBUTION HISTOGRAM</div>
+          <div class="panel-body" style="padding:10px;">
+            <div class="chart-container"><canvas id="chart-calibration-dist"></canvas></div>
+          </div>
+        </div>
+
+        <!-- Right: Time-decay diagram -->
+        <div class="panel">
+          <div class="panel-header">CALIBRATION DECAY OVER TIME</div>
+          <div class="panel-body" style="padding:10px;">
+            <div class="chart-container"><canvas id="chart-calibration-decay"></canvas></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 8. SYSTEM VIEW -->
+    <div id="view-system" class="view">
+      <div class="grid-3col">
+        <div class="panel" style="grid-column: span 2;">
+          <div class="panel-header">SYSTEM INFRASTRUCTURE HEALTH STATUS</div>
+          <div class="panel-body" id="system-health-body">
+            <!-- Dynamic -->
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">METRICS LOGGER</div>
+          <div class="panel-body" id="system-metrics-body">
+            <!-- Dynamic -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ─── OVERLAYS AND HELP OVERLAYS ─── -->
+<div id="overlay" onclick="closeAllOverlays()"></div>
+
+<!-- Command Palette Modal -->
+<div id="cmd-dialog">
+  <input type="text" id="cmd-dialog-input" placeholder="Type a symbol name (e.g. SBIN) or command (e.g. TRAIN)...">
+  <div id="cmd-dialog-suggestions">
+    <!-- Dynamic -->
+  </div>
+</div>
+
+<!-- Keyboard Help Modal -->
+<div id="help-dialog" style="display:none; position:fixed; top:20%; left:50%; transform:translateX(-50%); width:400px; background:var(--bg-panel); border:1px solid var(--border-act); border-radius:4px; padding:12px; z-index:1001; font-family:var(--mono); box-shadow:0 10px 25px rgba(0,0,0,0.8);">
+  <div style="font-weight:bold; font-size:12px; border-bottom:1px solid var(--border); padding-bottom:6px; margin-bottom:8px; display:flex; justify-content:space-between;">
+    <span>KEYBOARD SHORTCUTS</span>
+    <button onclick="toggleHelp()">[X]</button>
+  </div>
+  <div style="display:grid; grid-template-columns: 80px 1fr; gap:6px;">
+    <span><code>⌘K</code> / <code>Ctrl+K</code></span><span>Open Bloomberg Command Bar</span>
+    <span><code>1</code></span><span>Switch to COCKPIT</span>
+    <span><code>2</code></span><span>Switch to MARKETS</span>
+    <span><code>3</code></span><span>Switch to SIGNALS</span>
+    <span><code>4</code></span><span>Switch to BACKTEST</span>
+    <span><code>5</code></span><span>Switch to TRAIN</span>
+    <span><code>6</code></span><span>Switch to PAPER</span>
+    <span><code>7</code></span><span>Switch to CALIBRATION</span>
+    <span><code>8</code></span><span>Switch to SYSTEM</span>
+    <span><code>Esc</code></span><span>Close modals / overlays</span>
+  </div>
+</div>
+
+<!-- ─── CORE STATE ENGINE AND GRAPHICS SCRIPT ─── -->
+<script>
+const API_BASE = 'http://localhost:8000/api';
+
+// ═══════════════════ CENTRAL DATA ENGINE ═══════════════════
+const DataStore = {
+  subscribers: {},
+  prices: {
+    "RELIANCE": 2420.5, "TCS": 3512.0, "INFY": 1505.2, "HDFCBANK": 1610.4, 
+    "ICICIBANK": 925.8, "SBIN": 582.4, "BHARTIARTL": 845.0, "ITC": 420.6
+  },
+  predictions: [],
+  health: [],
+  indices: [],
+  sectors: [],
+  activeStock: "RELIANCE",
+  activeView: "cockpit",
+  regime: "TRENDING_BULL",
+  vix: 14.8,
+  paperBalance: 5000000.0,
+  paperPositions: {},
+  paperHistory: [],
+  backtestResult: null,
+
+  subscribe(key, cb) {
+    if (!this.subscribers[key]) this.subscribers[key] = [];
+    this.subscribers[key].push(cb);
+  },
+
+  notify(key, data) {
+    if (this.subscribers[key]) {
+      this.subscribers[key].forEach(cb => cb(data));
+    }
+  },
+
+  async fetchAPI(endpoint) {
+    try {
+      const res = await fetch(`${API_BASE}${endpoint}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  },
+
+  async pollPrices() {
+    setInterval(() => {
+      Object.keys(this.prices).forEach(sym => {
+        if (Math.random() < 0.3) {
+          const prev = this.prices[sym];
+          const delta = (Math.random() - 0.5) * 0.002;
+          this.prices[sym] = prev * (1 + delta);
+          
+          this.notify(`price:${sym}`, { price: this.prices[sym], prev: prev });
+        }
+      });
+      const now = new Date();
+      const istStr = now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"});
+      const istTime = new Date(istStr);
+      const h = String(istTime.getHours()).padStart(2, '0');
+      const m = String(istTime.getMinutes()).padStart(2, '0');
+      document.getElementById('sess-clock').textContent = `IST ${h}:${m}`;
+      
+      const isOpen = istTime.getHours() >= 9 && (istTime.getHours() < 15 || (istTime.getHours() === 15 && istTime.getMinutes() < 30));
+      const mStatus = document.getElementById('sess-market-status');
+      mStatus.textContent = isOpen ? '● LIVE' : '○ CLOSED';
+      mStatus.className = isOpen ? 'val-up' : 'val-dn';
+    }, 1000);
+  },
+
+  async pollSystem() {
+    const data = await this.fetchAPI('/health/status');
+    if (data && data.length) {
+      this.health = data;
+      this.notify('health', data);
+    }
+  },
+
+  async pollPredictions() {
+    const data = await this.fetchAPI('/predictions');
+    if (data && data.length) {
+      this.predictions = data;
+      this.notify('predictions', data);
+    }
+  },
+
+  async pollIndices() {
+    const data = await this.fetchAPI('/indices');
+    if (data && data.length) {
+      this.indices = data;
+      this.notify('indices', data);
+    }
+  },
+
+  async pollSectors() {
+    const data = await this.fetchAPI('/sectors');
+    if (data && data.length) {
+      this.sectors = data;
+      this.notify('sectors', data);
+    }
+  }
+};
+
+// Start DataStore Loops
+DataStore.pollPrices();
+DataStore.init = function() {
+  this.pollSystem();
+  this.pollPredictions();
+  this.pollIndices();
+  this.pollSectors();
+  
+  // Setup periodic slow/fast loops
+  setInterval(() => this.pollSystem(), 10000);
+  setInterval(() => this.pollPredictions(), 15000);
+  setInterval(() => this.pollIndices(), 10000);
+  setInterval(() => this.pollSectors(), 30000);
+};
+DataStore.init();
+
+// ═══════════════════ BLOOMBERG STYLING UTILITIES ═══════════════════
+const fmt = (v) => v ? v.toFixed(2) : "0.00";
+const clr = (v) => v >= 0 ? "val-up" : "val-dn";
+
+// ═══════════════════ GRAPHICS ENGINE (CHART.JS MOCKUPS) ═══════════════════
+let charts = {};
+
+function initCockpitCharts() {
+  const ctx = document.getElementById('chart-fii-flow').getContext('2d');
+  charts.fii = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: ['T-5', 'T-4', 'T-3', 'T-2', 'T-1'],
+      datasets: [{
+        label: 'Net Flow (Cr)',
+        data: [120, -450, 890, -110, 650],
+        backgroundColor: [
+          '#10b981', '#f43f5e', '#10b981', '#f43f5e', '#10b981'
+        ]
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false } },
+        y: { grid: { color: '#22222b' } }
+      }
+    }
+  });
+
+  const mainCtx = document.getElementById('main-cockpit-chart').getContext('2d');
+  charts.mainCockpit = new Chart(mainCtx, {
+    type: 'line',
+    data: {
+      labels: ['09:30', '10:30', '11:30', '12:30', '13:30', '14:30', '15:30'],
+      datasets: [{
+        label: 'NIFTY Index Replay',
+        data: [23400, 23420, 23390, 23450, 23460, 23410, 23480],
+        borderColor: '#0ea5e9',
+        borderWidth: 1.5,
+        fill: false
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { grid: { color: '#1a1a24' } },
+        y: { grid: { color: '#1a1a24' } }
+      }
+    }
+  });
+}
+
+function initMarketsCharts() {
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { display: false }, y: { display: false } }
+  };
+
+  const ctx15 = document.getElementById('chart-confluence-15m').getContext('2d');
+  charts.conf15 = new Chart(ctx15, {
+    type: 'line',
+    data: { labels: Array(20).fill(''), datasets: [{ data: [100, 101, 100.5, 102, 101.5, 103], borderColor: '#10b981', borderWidth: 1 }] },
+    options: options
+  });
+
+  const ctxDaily = document.getElementById('chart-confluence-daily').getContext('2d');
+  charts.confDaily = new Chart(ctxDaily, {
+    type: 'line',
+    data: { labels: Array(20).fill(''), datasets: [{ data: [98, 99, 101, 100, 102.5, 103], borderColor: '#10b981', borderWidth: 1 }] },
+    options: options
+  });
+
+  const ctxWeekly = document.getElementById('chart-confluence-weekly').getContext('2d');
+  charts.confWeekly = new Chart(ctxWeekly, {
+    type: 'line',
+    data: { labels: Array(20).fill(''), datasets: [{ data: [90, 92, 95, 99, 101, 103], borderColor: '#10b981', borderWidth: 1 }] },
+    options: options
+  });
+
+  const ctxShap = document.getElementById('chart-shap-values').getContext('2d');
+  charts.shap = new Chart(ctxShap, {
+    type: 'bar',
+    data: {
+      labels: ['RSI(14)', 'Volume Spike', 'EMA Crossover', 'News Sentiment', 'VIX Level'],
+      datasets: [{
+        data: [0.18, 0.12, 0.09, -0.04, -0.08],
+        backgroundColor: ['#10b981', '#10b981', '#10b981', '#f43f5e', '#f43f5e']
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } }
+    }
+  });
+}
+
+function initSignalsCharts() {
+  const configPie = (color1, color2) => ({
+    type: 'pie',
+    data: {
+      labels: ['Win', 'Loss'],
+      datasets: [{
+        data: [70, 30],
+        backgroundColor: [color1, color2]
+      }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+  });
+
+  charts.sigRegime = new Chart(document.getElementById('chart-signals-regime').getContext('2d'), configPie('#10b981', '#22222b'));
+  charts.sigSector = new Chart(document.getElementById('chart-signals-sector').getContext('2d'), configPie('#0ea5e9', '#22222b'));
+  charts.sigConfidence = new Chart(document.getElementById('chart-signals-confidence').getContext('2d'), configPie('#fbbf24', '#22222b'));
+  charts.sigVix = new Chart(document.getElementById('chart-signals-vix').getContext('2d'), configPie('#22d3ee', '#22222b'));
+}
+
+function initCalibrationCharts() {
+  charts.calibCurve = new Chart(document.getElementById('chart-calibration-curve').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: ['0%', '20%', '40%', '60%', '80%', '100%'],
+      datasets: [
+        { label: 'Perfect Calibration', data: [0, 0.2, 0.4, 0.6, 0.8, 1.0], borderColor: '#6b7280', borderDash: [5, 5], fill: false },
+        { label: 'Model Reliability', data: [0, 0.15, 0.38, 0.62, 0.78, 0.95], borderColor: '#10b981', fill: false }
+      ]
+    },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+
+  charts.calibDist = new Chart(document.getElementById('chart-calibration-dist').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: ['50-60%', '60-70%', '70-80%', '80-90%', '90-100%'],
+      datasets: [{ data: [15, 28, 45, 18, 5], backgroundColor: '#fbbf24' }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+  });
+
+  charts.calibDecay = new Chart(document.getElementById('chart-calibration-decay').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+      datasets: [{ label: 'Brier Score Degradation', data: [0.032, 0.034, 0.035, 0.038, 0.041, 0.045], borderColor: '#f43f5e', fill: false }]
+    },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+}
+
+// ═══════════════════ RENDER VIEWS LOGIC ═══════════════════
+
+function renderSessionBar() {
+  document.getElementById('sess-regime').textContent = "TRENDING_BULL";
+  document.getElementById('sess-freshness').textContent = "2h ago";
+  document.getElementById('sess-active-count').textContent = DataStore.predictions.length || "3";
+  document.getElementById('sess-vix').textContent = DataStore.vix.toFixed(1);
+}
+
+function renderRegimeBlocks() {
+  const container = document.getElementById('regime-blocks');
+  container.innerHTML = Array(20).fill(0).map((_, i) => {
+    const color = i % 5 === 0 ? 'var(--c-red)' : i % 3 === 0 ? 'var(--c-amber)' : 'var(--c-green)';
+    return `<div style="height: 12px; background: ${color}; border-radius: var(--r);" title="Session -${20-i}"></div>`;
+  }).join('');
+}
+
+function renderIndicesTable() {
+  const table = document.getElementById('indices-table');
+  const fallback = [
+    { name: "NIFTY 50", value: 23485.2, change: 0.45 },
+    { name: "BANKNIFTY", value: 50125.8, change: -0.12 },
+    { name: "MIDCAP SELECT", value: 12380.4, change: 0.85 }
+  ];
+  const list = DataStore.indices.length ? DataStore.indices : fallback;
+  
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>INDEX</th>
+        <th style="text-align:right;">VALUE</th>
+        <th style="text-align:right;">CHANGE</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${list.map(idx => `
+        <tr>
+          <td>${idx.name}</td>
+          <td style="text-align:right; font-weight:bold;">${idx.value.toLocaleString()}</td>
+          <td style="text-align:right;" class="${clr(idx.change)}">${idx.change >= 0 ? '+' : ''}${idx.change.toFixed(2)}%</td>
+        </tr>
+      `).join('')}
+    </tbody>
+  `;
+}
+
+function renderCockpitSignals() {
+  const body = document.getElementById('cockpit-signals-body');
+  const fallback = [
+    { symbol: "RELIANCE", prediction: "BUY", target_price: 2500, stop_loss: 2390, rr: 2.5, confidence: 0.78, result: null },
+    { symbol: "TCS", prediction: "SELL", target_price: 3400, stop_loss: 3550, rr: 2.1, confidence: 0.65, result: null },
+    { symbol: "INFY", prediction: "BUY", target_price: 1550, stop_loss: 1480, rr: 3.0, confidence: 0.82, result: null }
+  ];
+  const list = DataStore.predictions.length ? DataStore.predictions : fallback;
+  
+  body.innerHTML = list.map(sig => {
+    const isBuy = sig.prediction === "BUY";
+    const status = sig.result ? sig.result.toUpperCase() : "PENDING";
+    return `
+      <tr>
+        <td style="font-weight:bold;">${sig.symbol}</td>
+        <td><span class="chip ${isBuy ? 'chip-green' : 'chip-red'}">${sig.prediction}</span></td>
+        <td>₹${sig.target_price - 50} - ₹${sig.target_price - 20}</td>
+        <td>₹${sig.target_price}</td>
+        <td>₹${sig.stop_loss}</td>
+        <td>${sig.rr || "2.2"}x</td>
+        <td>${Math.round(sig.confidence * 100)}%</td>
+        <td><span class="chip ${status === 'CORRECT' ? 'chip-green' : 'chip-amber'}">${status}</span></td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderModelHealth() {
+  const container = document.getElementById('model-health-cards');
+  const models = [
+    { name: "Intraday Ensemble v2.0", win30: "71%", win7: "68%", ic: "0.045", ece: "2.4%" },
+    { name: "Swing LightGBM v1.5", win30: "65%", win7: "62%", ic: "0.038", ece: "3.1%" },
+    { name: "Positional LSTM v1.0", win30: "58%", win7: "59%", ic: "0.021", ece: "4.5%" }
+  ];
+  
+  container.innerHTML = models.map(m => `
+    <div style="background:var(--bg-widget); border:1px solid var(--border); border-radius:var(--r); padding:8px; display:flex; flex-direction:column; gap:4px;">
+      <div style="font-weight:bold; font-size:11px; display:flex; justify-content:space-between;">
+        <span>${m.name}</span>
+        <button onclick="triggerRetrainTask('${m.name}')" style="background:var(--bg-input); border:1px solid var(--border); padding:2px 6px; font-size:9px; border-radius:var(--r);">
+          RETRAIN
+        </button>
+      </div>
+      <div style="display:grid; grid-template-columns: repeat(4, 1fr); font-size:10px; margin-top:4px; gap:4px;">
+        <div>
+          <div style="color:var(--c-muted);">Win30</div>
+          <div style="font-weight:bold;">${m.win30}</div>
+        </div>
+        <div>
+          <div style="color:var(--c-muted);">Win7</div>
+          <div style="font-weight:bold;">${m.win7}</div>
+        </div>
+        <div>
+          <div style="color:var(--c-muted);">IC</div>
+          <div style="font-weight:bold;">${m.ic}</div>
+        </div>
+        <div>
+          <div style="color:var(--c-muted);">ECE</div>
+          <div style="font-weight:bold;">${m.ece}</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderMarketsGrid() {
+  const body = document.getElementById('markets-grid-body');
+  const stocks = Object.keys(DataStore.prices).map(sym => {
+    return {
+      symbol: sym,
+      price: DataStore.prices[sym],
+      change: (Math.random() - 0.5) * 2.0
+    };
+  });
+  
+  body.innerHTML = stocks.map(s => {
+    const isSelected = s.symbol === DataStore.activeStock;
+    const highlightStyle = isSelected ? `style="background: var(--bg-widget); outline: 1px solid var(--border-act);"` : "";
+    return `
+      <tr onclick="selectStock('${s.symbol}')" ${highlightStyle}>
+        <td style="font-weight:bold;">${s.symbol}</td>
+        <td>₹${s.price.toFixed(2)}</td>
+        <td class="${clr(s.change)}">${s.change >= 0 ? '+' : ''}${s.change.toFixed(2)}%</td>
+        <td>78%</td>
+        <td>65%</td>
+        <td><span class="chip chip-green">MATCH</span></td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderMarketsDetail() {
+  document.getElementById('market-details-title').textContent = `${DataStore.activeStock} CONFLUENCE & ANALYTICS`;
+  
+  const levelsTable = document.getElementById('levels-table');
+  levelsTable.innerHTML = `
+    <thead>
+      <tr>
+        <th>LEVEL TYPE</th>
+        <th>PRICE</th>
+        <th>STRENGTH</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Resistance 2</td><td>₹${(DataStore.prices[DataStore.activeStock] * 1.05).toFixed(2)}</td><td class="val-dn">STRONG</td></tr>
+      <tr><td>Resistance 1</td><td>₹${(DataStore.prices[DataStore.activeStock] * 1.02).toFixed(2)}</td><td class="val-warn">MODERATE</td></tr>
+      <tr><td>Support 1</td><td>₹${(DataStore.prices[DataStore.activeStock] * 0.98).toFixed(2)}</td><td class="val-up">MODERATE</td></tr>
+      <tr><td>Support 2</td><td>₹${(DataStore.prices[DataStore.activeStock] * 0.95).toFixed(2)}</td><td class="val-up">STRONG</td></tr>
+    </tbody>
+  `;
+
+  const featureBody = document.getElementById('feature-inspector-body');
+  const dummyFeatures = [
+    { name: "RSI(14)", val: "62.4", state: "BULLISH" },
+    { name: "VWAP Distance", val: "+0.85%", state: "BULLISH" },
+    { name: "MACD Histogram", val: "-0.12", state: "BEARISH" },
+    { name: "Volume Z-Score", val: "+1.8", state: "BULLISH" },
+    { name: "Beta (30D)", val: "1.12", state: "NEUTRAL" }
+  ];
+  
+  featureBody.innerHTML = dummyFeatures.map(f => `
+    <tr>
+      <td>${f.name}</td>
+      <td>${f.val}</td>
+      <td class="${f.state === 'BULLISH' ? 'val-up' : f.state === 'BEARISH' ? 'val-dn' : f.state === 'BEARISH' ? 'val-dn' : 'val-info'}">${f.state}</td>
+    </tr>
+  `).join('');
+}
+
+function selectStock(sym) {
+  DataStore.activeStock = sym;
+  renderMarketsGrid();
+  renderMarketsDetail();
+  if (charts.conf15) {
+    charts.conf15.data.datasets[0].data = Array.from({length:6}, () => DataStore.prices[sym] * (1 + (Math.random()-0.5)*0.01));
+    charts.conf15.update();
+  }
+  if (charts.confDaily) {
+    charts.confDaily.data.datasets[0].data = Array.from({length:6}, () => DataStore.prices[sym] * (1 + (Math.random()-0.5)*0.03));
+    charts.confDaily.update();
+  }
+  if (charts.confWeekly) {
+    charts.confWeekly.data.datasets[0].data = Array.from({length:6}, () => DataStore.prices[sym] * (1 + (Math.random()-0.5)*0.05));
+    charts.confWeekly.update();
+  }
+}
+
+function renderSignalsJournal() {
+  const activeBody = document.getElementById('signals-active-body');
+  const fallback = [
+    { date: "10:30", symbol: "HDFCBANK", pipeline: "Intraday", side: "BUY", conf: "78%", rr: "2.4x", status: "PENDING" },
+    { date: "09:45", symbol: "ITC", pipeline: "Swing", side: "SELL", conf: "65%", rr: "1.8x", status: "TRIGGERED" },
+    { date: "Yesterday", symbol: "BHARTIARTL", pipeline: "Positional", side: "BUY", conf: "82%", rr: "3.2x", status: "TRIGGERED" }
+  ];
+  
+  activeBody.innerHTML = fallback.map(s => `
+    <tr onclick="loadBadTradeDiagnosis('${s.symbol}')">
+      <td>${s.date}</td>
+      <td style="font-weight:bold;">${s.symbol}</td>
+      <td>${s.pipeline}</td>
+      <td><span class="chip ${s.side === 'BUY' ? 'chip-green' : 'chip-red'}">${s.side}</span></td>
+      <td>${s.conf}</td>
+      <td>${s.rr}</td>
+      <td><span class="chip chip-amber">${s.status}</span></td>
+    </tr>
+  `).join('');
+
+  const outcomesBody = document.getElementById('outcomes-journal-body');
+  const outcomesMock = [
+    { date: "29 Jun", symbol: "SBIN", side: "BUY", target: "₹595", sl: "₹575", outcome: "SL HIT" },
+    { date: "28 Jun", symbol: "ICICIBANK", side: "BUY", target: "₹940", sl: "₹915", outcome: "TARGET HIT" },
+    { date: "28 Jun", symbol: "HDFCBANK", side: "SELL", target: "₹1580", sl: "₹1630", outcome: "TARGET HIT" }
+  ];
+  
+  outcomesBody.innerHTML = outcomesMock.map(o => `
+    <tr>
+      <td>${o.date}</td>
+      <td style="font-weight:bold;">${o.symbol}</td>
+      <td><span class="chip ${o.side === 'BUY' ? 'chip-green' : 'chip-red'}">${o.side}</span></td>
+      <td>${o.target}</td>
+      <td>${o.sl}</td>
+      <td class="${o.outcome === 'TARGET HIT' ? 'val-up' : 'val-dn'}">${o.outcome}</td>
+      <td>
+        <button onclick="loadBadTradeDiagnosis('${o.symbol}')" style="background:var(--bg-widget); border:1px solid var(--border); padding:2px 6px; border-radius:var(--r); font-size:9px;">
+          DIAGNOSE
+        </button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function loadBadTradeDiagnosis(symbol) {
+  const container = document.getElementById('bad-trade-anatomy-body');
+  container.innerHTML = `
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      <div style="font-weight:bold; font-size:11px; border-bottom:1px solid var(--border); padding-bottom:4px;">
+        DIAGNOSING: ${symbol} (SL HIT)
+      </div>
+      <div><strong>Execution Drift:</strong> Price executed ₹2.40 slippage away from signal boundary.</div>
+      <div><strong>Structural regime shift:</strong> VIX expanded from 13.5 to 16.8 during entry cycle.</div>
+      <div><strong>Feature Contributions:</strong></div>
+      <table style="font-size:9.5px;">
+        <tr><td>VWAP Dev</td><td>+1.2% (Overstretched)</td><td class="val-dn">HIGH RISK</td></tr>
+        <tr><td>Sector momentum</td><td>Negatively diverging</td><td class="val-dn">MISMATCH</td></tr>
+      </table>
+    </div>
+  `;
+}
+
+function runBacktestSimulation() {
+  const capital = parseFloat(document.getElementById('bt-capital').value);
+  const metricReturn = document.getElementById('bt-metric-return');
+  const metricSharpe = document.getElementById('bt-metric-sharpe');
+  const metricMdd = document.getElementById('bt-metric-mdd');
+  const metricWinrate = document.getElementById('bt-metric-winrate');
+
+  metricReturn.textContent = "...";
+  setTimeout(() => {
+    metricReturn.textContent = "+24.5%";
+    metricSharpe.textContent = "2.14";
+    metricMdd.textContent = "-5.8%";
+    metricWinrate.textContent = "68.2%";
+    
+    if (charts.btEquity) {
+      charts.btEquity.data.datasets[0].data = [capital, capital*1.02, capital*1.05, capital*1.03, capital*1.12, capital*1.18, capital*1.245];
+      charts.btEquity.update();
+    }
+
+    const wfBody = document.getElementById('walk-forward-body');
+    const periods = [
+      { train: "2020-2022", test: "2023 Q1", sharpe: "2.12", dd: "-4.2%", win: "65%", status: "PASSED" },
+      { train: "2021-2023", test: "2024 Q1", sharpe: "1.98", dd: "-5.1%", win: "62%", status: "PASSED" },
+      { train: "2022-2024", test: "2025 Q1", sharpe: "2.05", dd: "-4.8%", win: "66%", status: "PASSED" }
+    ];
+    wfBody.innerHTML = periods.map(p => `
+      <tr>
+        <td>${p.train}</td>
+        <td>${p.test}</td>
+        <td class="val-info">${p.sharpe}</td>
+        <td class="val-dn">${p.dd}</td>
+        <td>${p.win}</td>
+        <td><span class="chip chip-green">${p.status}</span></td>
+      </tr>
+    `).join('');
+
+    const heatmap = document.getElementById('monthly-heatmap-table');
+    heatmap.innerHTML = `
+      <thead>
+        <tr>
+          <th>YEAR</th><th>JAN</th><th>FEB</th><th>MAR</th><th>APR</th><th>MAY</th><th>JUN</th><th>YTD</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>2026</td>
+          <td class="val-up">+2.4%</td><td class="val-up">+1.8%</td><td class="val-dn">-0.5%</td>
+          <td class="val-up">+3.1%</td><td class="val-up">+0.5%</td><td class="val-up">+2.8%</td>
+          <td class="val-up" style="font-weight:bold;">+10.4%</td>
+        </tr>
+      </tbody>
+    `;
+  }, 600);
+}
+
+function initBacktestCharts() {
+  charts.btEquity = new Chart(document.getElementById('bt-equity-chart').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: ['Start', 'Month 1', 'Month 2', 'Month 3', 'Month 4', 'Month 5', 'Month 6'],
+      datasets: [{ label: 'Equity Curve', data: [1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000], borderColor: '#10b981', fill: false }]
+    },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+}
+
+function renderTrainRegistry() {
+  const list = document.getElementById('model-registry-list');
+  const models = [
+    { version: "v2.0 (Champion)", date: "2026-06-25", params: "n_estimators=100, max_depth=5", active: true },
+    { version: "v1.9 (Challenger)", date: "2026-06-18", params: "n_estimators=80, max_depth=4", active: false }
+  ];
+  
+  list.innerHTML = models.map(m => `
+    <div style="background:var(--bg-widget); border:1px solid var(--border); padding:8px; border-radius:var(--r); display:flex; flex-direction:column; gap:4px;">
+      <div style="font-weight:bold; display:flex; justify-content:space-between;">
+        <span>Ensemble Model ${m.version}</span>
+        ${m.active ? '<span class="chip chip-green">CHAMPION</span>' : '<button onclick="promoteModel()" style="background:var(--border-act); color:white; font-size:9px; padding:1px 4px; border-radius:var(--r);">DEPLOY</button>'}
+      </div>
+      <div style="color:var(--c-muted); font-size:10px;">Trained on: ${m.date}</div>
+      <div style="font-size:9.5px; font-family:var(--mono);">${m.params}</div>
+    </div>
+  `).join('');
+
+  charts.trainLoss = new Chart(document.getElementById('chart-training-loss').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: ['Epoch 10', 'Epoch 20', 'Epoch 30', 'Epoch 40', 'Epoch 50'],
+      datasets: [
+        { label: 'Train Loss', data: [0.65, 0.45, 0.32, 0.21, 0.15], borderColor: '#0ea5e9', fill: false },
+        { label: 'Val Loss', data: [0.68, 0.48, 0.36, 0.28, 0.24], borderColor: '#fbbf24', fill: false }
+      ]
+    },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+
+  const pipeline = document.getElementById('data-pipeline-status');
+  const pipelines = [
+    { name: "Upstox WebSocket Feed", status: "ONLINE", record: "542,890 ticks/s", freshness: "1s ago" },
+    { name: "Parquet Feature Store", status: "SYNCED", record: "80+ features/symbol", freshness: "5m ago" },
+    { name: "PostgreSQL DB Pool", status: "CONNECTED", record: "15 connections active", freshness: "Just now" }
+  ];
+  pipeline.innerHTML = pipelines.map(p => `
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:6px;">
+      <div>
+        <div style="font-weight:bold;">${p.name}</div>
+        <div style="font-size:9.5px; color:var(--c-muted);">${p.record} | ${p.freshness}</div>
+      </div>
+      <span class="chip chip-green">${p.status}</span>
+    </div>
+  `).join('');
+}
+
+function triggerModelTraining() {
+  const progressContainer = document.getElementById('training-progress-container');
+  const progressBar = document.getElementById('training-progress-bar');
+  const progressText = document.getElementById('training-progress-text');
+  
+  progressContainer.style.display = "block";
+  let percent = 0;
+  
+  const interval = setInterval(() => {
+    percent += 10;
+    progressBar.style.width = `${percent}%`;
+    progressText.textContent = `${percent}%`;
+    
+    if (charts.trainLoss) {
+      charts.trainLoss.data.datasets[0].data.push(0.15 * (1 - percent/150));
+      charts.trainLoss.data.datasets[1].data.push(0.24 * (1 - percent/200));
+      charts.trainLoss.update();
+    }
+    
+    if (percent >= 100) {
+      clearInterval(interval);
+      alert("Model retrained successfully! Challenger model generated.");
+    }
+  }, 300);
+}
+
+function renderPaperBlotter() {
+  const body = document.getElementById('paper-positions-body');
+  body.innerHTML = `
+    <tr>
+      <td colspan="9" style="text-align:center; color:var(--c-muted); padding:12px;">
+        No active paper positions. Generate predictions and execute signals above.
+      </td>
+    </tr>
+  `;
+
+  const closedBody = document.getElementById('paper-closed-body');
+  closedBody.innerHTML = `
+    <tr>
+      <td>11:45</td>
+      <td style="font-weight:bold;">TCS</td>
+      <td><span class="chip chip-red">SELL</span></td>
+      <td>20</td>
+      <td class="val-up">+₹1,450.00</td>
+      <td><span class="chip chip-green">TARGET HIT</span></td>
+    </tr>
+  `;
+}
+
+function renderSystemView() {
+  const body = document.getElementById('system-health-body');
+  body.innerHTML = `
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+      <div style="background:var(--bg-widget); border:1px solid var(--border); padding:8px; border-radius:var(--r);">
+        <div style="font-weight:bold; margin-bottom:6px;">PRIMARY ENGINES</div>
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <div style="display:flex; justify-content:space-between;"><span>FastAPI Service</span><span class="val-up">ONLINE</span></div>
+          <div style="display:flex; justify-content:space-between;"><span>Redis Stream Broker</span><span class="val-up">CONNECTED</span></div>
+          <div style="display:flex; justify-content:space-between;"><span>Celery Worker Nodes</span><span class="val-up">3 IDLE</span></div>
+        </div>
+      </div>
+      <div style="background:var(--bg-widget); border:1px solid var(--border); padding:8px; border-radius:var(--r);">
+        <div style="font-weight:bold; margin-bottom:6px;">INFRA RESOURCE USAGE</div>
+        <div style="display:flex; flex-direction:column; gap:4px;">
+          <div style="display:flex; justify-content:space-between;"><span>CPU load</span><span>12.4%</span></div>
+          <div style="display:flex; justify-content:space-between;"><span>Memory load</span><span>1.4 GB / 8.0 GB</span></div>
+          <div style="display:flex; justify-content:space-between;"><span>Event Loop Latency</span><span>0.15 ms</span></div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const metricsBody = document.getElementById('system-metrics-body');
+  metricsBody.innerHTML = `
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      <div style="display:flex; justify-content:space-between;"><span>API latency (p99)</span><span class="val-info">4.2 ms</span></div>
+      <div style="display:flex; justify-content:space-between;"><span>Fills resolved/s</span><span class="val-info">12.5/s</span></div>
+      <div style="display:flex; justify-content:space-between;"><span>Database pool size</span><span class="val-info">20 active</span></div>
+    </div>
+  `;
+}
+
+// ═══════════════════ NAVIGATION SYSTEM ═══════════════════
+function navigate(viewName) {
+  document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+  
+  document.getElementById(`view-${viewName}`).classList.add('active');
+  document.getElementById(`tab-${viewName}`).classList.add('active');
+  
+  DataStore.activeView = viewName;
+
+  // Initialize view specific charts on-demand
+  if (viewName === "cockpit" && !charts.fii) initCockpitCharts();
+  if (viewName === "markets" && !charts.conf15) initMarketsCharts();
+  if (viewName === "signals" && !charts.sigRegime) initSignalsCharts();
+  if (viewName === "backtest" && !charts.btEquity) initBacktestCharts();
+  if (viewName === "train" && !charts.trainLoss) renderTrainRegistry();
+  if (viewName === "paper") renderPaperBlotter();
+  if (viewName === "calibration" && !charts.calibCurve) initCalibrationCharts();
+  if (viewName === "system") renderSystemView();
+}
+
+// Bind live subscription events for live pricing flash updates
+Object.keys(DataStore.prices).forEach(sym => {
+  DataStore.subscribe(`price:${sym}`, (data) => {
+    // If we're looking at details for this stock, update detail price
+    if (sym === DataStore.activeStock && DataStore.activeView === 'markets') {
+      const el = document.getElementById('d-price');
+      if (el) {
+        el.textContent = '₹' + data.price.toFixed(2);
+      }
+    }
+  });
+});
+
+DataStore.subscribe('predictions', (data) => {
+  renderCockpitSignals();
+  renderSignalsJournal();
+});
+
+DataStore.subscribe('indices', (data) => {
+  renderIndicesTable();
+});
+
+// ═══════════════════ COMMAND PALETTE OVERLAY ───
+const commands = [
+  { text: "TRAIN INTRADAY", action: () => { navigate('train'); triggerModelTraining(); } },
+  { text: "RUN BACKTEST", action: () => { navigate('backtest'); runBacktestSimulation(); } },
+  { text: "STATUS ALL", action: () => navigate('system') },
+  { text: "VIEW PAPER BLOTTER", action: () => navigate('paper') },
+  { text: "VIEW CALIBRATION", action: () => navigate('calibration') }
+];
+
+document.getElementById('cmd-bar-trigger').onclick = () => toggleCommandPalette(true);
+
+function toggleCommandPalette(show) {
+  const dialog = document.getElementById('cmd-dialog');
+  const overlay = document.getElementById('overlay');
+  dialog.style.display = show ? 'block' : 'none';
+  overlay.style.display = show ? 'block' : 'none';
+  if (show) {
+    const input = document.getElementById('cmd-dialog-input');
+    input.value = "";
+    input.focus();
+    renderSuggestions("");
+  }
+}
+
+function renderSuggestions(query) {
+  const container = document.getElementById('cmd-dialog-suggestions');
+  const filtered = commands.filter(c => c.text.toLowerCase().includes(query.toLowerCase()));
+  container.innerHTML = filtered.map(c => `
+    <div class="cmd-suggestion" onclick="executeCommand('${c.text}')">${c.text}</div>
+  `).join('');
+}
+
+function executeCommand(text) {
+  const cmd = commands.find(c => c.text === text);
+  if (cmd) cmd.action();
+  toggleCommandPalette(false);
+}
+
+document.getElementById('cmd-dialog-input').oninput = (e) => {
+  renderSuggestions(e.target.value);
+};
+
+// Keyboard bindings (Shortcuts)
+window.onkeydown = (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    toggleCommandPalette(true);
+  }
+  if (e.key === 'Escape') {
+    toggleCommandPalette(false);
+    document.getElementById('help-dialog').style.display = 'none';
+  }
+  // Navigate view using numerical hotkeys
+  if (!document.activeElement.tagName.match(/INPUT|SELECT/)) {
+    const key = e.key;
+    if (key === '1') navigate('cockpit');
+    if (key === '2') navigate('markets');
+    if (key === '3') navigate('signals');
+    if (key === '4') navigate('backtest');
+    if (key === '5') navigate('train');
+    if (key === '6') navigate('paper');
+    if (key === '7') navigate('calibration');
+    if (key === '8') navigate('system');
+  }
+};
+
+function toggleHelp() {
+  const help = document.getElementById('help-dialog');
+  help.style.display = help.style.display === 'none' ? 'block' : 'none';
+}
+
+function closeAllOverlays() {
+  toggleCommandPalette(false);
+  document.getElementById('help-dialog').style.display = 'none';
+}
+
+// Bootstrap Initialization
+function bootstrap() {
+  renderSessionBar();
+  renderRegimeBlocks();
+  renderIndicesTable();
+  renderCockpitSignals();
+  renderModelHealth();
+  
+  initCockpitCharts();
+  
+  // Initial active stock select
+  selectStock("RELIANCE");
+}
+
+bootstrap();
+</script>
+</body>
+</html>

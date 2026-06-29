@@ -1,0 +1,27 @@
+# Prefect Configuration for Quant Research OS
+
+[profile]
+name = "quant-research-os"
+
+[cli]
+# Prefect CLI settings
+
+[server]
+# Prefect server settings (for local development)
+api_url = "http://localhost:4200/api"
+
+[logging]
+# Logging configuration
+level = "INFO"
+
+[flows]
+# Default flow settings
+default_parameter_schema = True
+
+[tasks]
+# Default task settings
+default_retry_delay_seconds = 60
+
+[deployments]
+# Deployment configuration
+work_pool_name = "local-process"

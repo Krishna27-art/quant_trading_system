@@ -1,0 +1,49 @@
+# Disaster Recovery & Hot Failover Configuration
+# Target: Survive AZ drops, DNS failures, and Broker API glitches
+
+# Global Settings
+failover_mode: "auto"
+max_failover_retries: 3
+alert_email: "quant-alerts@institutional-fund.local"
+
+# Cloud Provider Redundancy
+cloud_providers:
+  primary:
+    provider: "AWS"
+    region: "ap-south-1" (Mumbai)
+    availability_zones: ["ap-south-1a", "ap-south-1b"]
+    dns_servers: ["1.1.1.1", "8.8.8.8"]
+  secondary:
+    provider: "GCP"
+    region: "asia-south1" (Mumbai)
+    availability_zones: ["asia-south1-a", "asia-south1-b"]
+    dns_servers: ["9.9.9.9", "1.0.0.1"]
+
+# Database Failover
+databases:
+  clickhouse:
+    primary: "ch-primary.internal:9000"
+    replica: "ch-replica.internal:9000"
+    timeout_ms: 5000
+  postgresql_ems:
+    primary: "pg-ems-primary.internal:5432"
+    standby: "pg-ems-standby.internal:5432"
+    timeout_ms: 2000
+
+# Broker API Redundancy
+brokers:
+  primary_gateway: "Zerodha_Kite_API"
+  backup_gateway: "Upstox_API"
+  failover_condition: "5 consecutive 5XX HTTP errors or WebSocket disconnects > 30s"
+
+# NSE Data Feed Redundancy
+market_data:
+  primary_feed: "NSE_Colocation_Direct"
+  backup_feed: "NSE_Tick_By_Tick_Internet"
+  tertiary_feed: "Vendor_REST_API"
+
+# Circuit Breaker / Kill Switches
+kill_switches:
+  max_portfolio_drawdown_pct: 15.0
+  max_unfilled_orders: 500
+  exchange_connectivity_loss_action: "CANCEL_ALL_OPEN_ORDERS_AND_FLATTEN"

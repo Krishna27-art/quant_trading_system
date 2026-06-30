@@ -40,6 +40,9 @@ from portfolio_execution.oms import (
 from portfolio_execution.state_manager import Candle, MarketState, SessionStateManager
 from portfolio_execution.state_persistence import RedisStateStore
 from portfolio_execution.wal_journal import WALJournal
+from risk_governance.pre_trade.circuit_breakers import CircuitBreaker
+from risk_governance.pre_trade.historical_var import HistoricalVaR
+from risk_governance.pre_trade.portfolio_risk import PortfolioRiskEngine
 from utils.logger import get_logger
 
 logger = get_logger("orchestrator")
@@ -140,6 +143,17 @@ class TradingOrchestrator:
             if self.config.mode == ExecutionMode.LIVE:
                 raise ValueError(f"Configuration errors in LIVE mode: {errors}")
 
+        # New Infrastructure Components
+        self.wal_journal = WALJournal()
+        self.state_store = RedisStateStore()
+        self.alert_manager = AlertManager()
+        self.drop_copy = DropCopyReconciler(DropCopyConfig(), self.oms, self.ems)
+
+        # Risk Governance Components (previously built but never wired in)
+        self.circuit_breaker = CircuitBreaker()
+        self.portfolio_risk = PortfolioRiskEngine(total_capital=self.config.initial_capital)
+        self.historical_var = HistoricalVaR(confidence_level=0.99, lookback_window=252)
+
         # Core components
         self.oms = OrderManagementSystem(
             max_daily_loss_pct=self.config.risk.max_daily_loss_pct,
@@ -149,7 +163,15 @@ class TradingOrchestrator:
             max_trades_per_day=self.config.risk.max_trades_per_day,
             max_single_position_pct=self.config.risk.max_single_position_pct,
             max_sector_exposure_pct=self.config.risk.max_sector_exposure_pct,
+            wal_journal=self.wal_journal,  # Wire WAL journal for crash recovery
         )
+
+        # Replay WAL to restore state after crash
+        try:
+            self.wal_journal.replay(self.oms)
+            logger.info("WAL replay completed successfully - state restored from crash")
+        except Exception as e:
+            logger.error(f"WAL replay failed: {e} - starting with clean state")
         self.ems = ExecutionManagementSystem(
             routing_strategy=RoutingStrategy.FAILOVER,
             order_timeout_seconds=self.config.broker.order_timeout_seconds,
@@ -158,12 +180,6 @@ class TradingOrchestrator:
 
         # Wire EMS fills back to OMS
         self.ems.set_on_fill(self.oms.on_fill)
-
-        # New Infrastructure Components
-        self.wal_journal = WALJournal()
-        self.state_store = RedisStateStore()
-        self.alert_manager = AlertManager()
-        self.drop_copy = DropCopyReconciler(DropCopyConfig(), self.oms, self.ems)
 
         # Session state managers (one per instrument)
         self._state_managers: dict[str, SessionStateManager] = {}
@@ -453,10 +469,12 @@ class TradingOrchestrator:
     def _filter_signals(
         self, signals: list[TradeSignal], state_mgr: SessionStateManager
     ) -> list[TradeSignal]:
-        """Filter signals through all registered risk filters."""
+        """Filter signals through all registered risk filters and institutional risk checks."""
         approved = []
         for sig in signals:
             passed = True
+
+            # 1. Custom risk filters (registered by caller)
             for risk_filter in self._risk_filters:
                 try:
                     if not risk_filter.filter_signal(sig, state_mgr):
@@ -467,22 +485,48 @@ class TradingOrchestrator:
                     passed = False
                     break
 
-            # Additional built-in filters
-            if passed:
-                # Minimum reward-to-risk check
-                if sig.reward_to_risk < self.config.risk.min_reward_to_risk:
-                    logger.debug(
-                        f"[{sig.symbol}] Signal rejected: R:R {sig.reward_to_risk:.2f} "
-                        f"< {self.config.risk.min_reward_to_risk}"
-                    )
-                    continue
+            if not passed:
+                continue
 
-                # Minimum confidence check
-                if sig.confidence < 5.0:
-                    logger.debug(f"[{sig.symbol}] Signal rejected: low confidence {sig.confidence}")
-                    continue
+            # 2. Circuit breaker: VIX-based position sizing
+            current_vix = sig.metadata.get("market_data", {}).get("vix", 15.0)
+            vix_allowed, adjusted_size = self.circuit_breaker.check_vix_limits(
+                current_vix, sig.confidence
+            )
+            if not vix_allowed:
+                logger.warning(f"[{sig.symbol}] Signal rejected: VIX circuit breaker triggered")
+                continue
+            # Adjust confidence based on VIX (circuit breaker may have reduced it)
+            sig.confidence = adjusted_size
 
-                approved.append(sig)
+            # 3. Portfolio risk: position and sector limits
+            open_positions = [
+                {"symbol": p.symbol, "side": "BUY", "position_size": p.quantity}
+                for p in self.oms.positions.values()
+                if p.quantity != 0
+            ]
+            pos_allowed, pos_reason = self.portfolio_risk.check_position_limits(
+                open_positions, sig.symbol
+            )
+            if not pos_allowed:
+                logger.warning(f"[{sig.symbol}] Signal rejected: {pos_reason}")
+                continue
+
+            # 4. Built-in filters
+            # Minimum reward-to-risk check
+            if sig.reward_to_risk < self.config.risk.min_reward_to_risk:
+                logger.debug(
+                    f"[{sig.symbol}] Signal rejected: R:R {sig.reward_to_risk:.2f} "
+                    f"< {self.config.risk.min_reward_to_risk}"
+                )
+                continue
+
+            # Minimum confidence check
+            if sig.confidence < 5.0:
+                logger.debug(f"[{sig.symbol}] Signal rejected: low confidence {sig.confidence}")
+                continue
+
+            approved.append(sig)
 
         return approved
 

@@ -294,6 +294,9 @@ class BacktestingEngine:
             date_predictions = self._get_predictions_for_date(predictions, resolved_date)
             self._rebalance_portfolio(resolved_date, date_predictions, price_data)
 
+        # Liquidate all remaining open positions at end of backtest
+        self._liquidate_open_positions(price_data)
+
         # Calculate results
         result = self._calculate_results()
 
@@ -522,6 +525,50 @@ class BacktestingEngine:
         top_predictions = [p for p in predictions if p.prediction == 2]
         top_predictions.sort(key=lambda x: x.confidence, reverse=True)
         return top_predictions
+
+    def _liquidate_open_positions(self, price_data: pd.DataFrame) -> None:
+        """
+        Liquidate all remaining open positions at the end of the backtest.
+
+        Previously, positions that were still open at the final backtest date
+        were never closed or counted in total_trades, leading to meaningless
+        win_rate calculations (division by zero when no trades closed during
+        the backtest). This method ensures all positions are liquidated at
+        the final available price and counted in the results.
+        """
+        if not self._current_portfolio or not self._current_portfolio.positions:
+            return
+
+        final_date = self._current_portfolio.date
+        symbol_prices = self._get_symbol_prices(final_date, price_data)
+
+        for position in self._current_portfolio.positions:
+            if position.exit_date is not None:
+                continue  # Already closed
+
+            current_price = symbol_prices.get(position.symbol, position.entry_price)
+            if current_price <= 0:
+                self.logger.warning(
+                    f"Cannot liquidate {position.symbol}: no price available at {final_date}"
+                )
+                continue
+
+            exit_price = current_price * (1 - self.config.slippage_rate)
+
+            position.exit_date = final_date
+            position.exit_price = exit_price
+            position.exit_reason = "end_of_backtest"
+            position.pnl = (exit_price - position.entry_price) * position.shares
+            position.pnl_pct = (exit_price - position.entry_price) / position.entry_price
+
+            sell_cost = self.cost_calculator.calculate_sell_cost(position.shares, exit_price)
+            self._current_portfolio.cash += (position.shares * exit_price) - sell_cost
+
+            self._all_positions.append(position)
+            self.logger.info(
+                f"Liquidated {position.symbol} at end of backtest: "
+                f"PnL={position.pnl:.2f} ({position.pnl_pct:.2%})"
+            )
 
     def _calculate_results(self) -> BacktestResult:
         """Calculate backtest results."""

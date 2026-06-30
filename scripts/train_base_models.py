@@ -34,6 +34,7 @@ from prediction_intelligence.base_logistic import (
     SWING_FEATURES,
     LONGTERM_FEATURES,
 )
+from utils.label_validator import LabelValidator
 from utils.logger import get_logger
 
 logger = get_logger("train_base_models")
@@ -113,6 +114,7 @@ def _get_fundamentals(symbol: str) -> dict[str, float]:
 def train_longterm(symbols: list[str], model_dir: str) -> None:
     logger.info("=== Training LOGREG_LONGTERM_v1 ===")
 
+    validator = LabelValidator()
     all_X: list[pd.DataFrame] = []
     all_y: list[pd.Series]    = []
 
@@ -136,6 +138,12 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: too few clean rows ({len(combined)}) — skipping")
             continue
 
+        # Validate label distribution before including in training set
+        label_stats = validator.validate_label_distribution(combined["__label__"], min_samples=20)
+        if not label_stats["valid"]:
+            logger.warning(f"  {sym}: label validation failed — skipping")
+            continue
+
         all_X.append(combined[LONGTERM_FEATURES])
         all_y.append(combined["__label__"].astype(int))
         logger.info(f"  {sym}: {len(combined)} training rows, "
@@ -149,6 +157,12 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
     y = pd.concat(all_y, ignore_index=True)
     logger.info(f"Total LONGTERM training rows: {len(X)}, overall win_rate={y.mean():.2%}")
 
+    # Final validation on combined dataset
+    final_stats = validator.validate_label_distribution(y, min_samples=100)
+    if not final_stats["valid"]:
+        logger.error("Combined LONGTERM label validation failed — aborting")
+        return
+
     model     = BaseLogistic(n_splits=5)
     save_path = os.path.join(model_dir, "LOGREG_LONGTERM_v1.joblib")
     metrics   = model.train(X, y, LONGTERM_FEATURES, save_path=save_path)
@@ -161,6 +175,7 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
 def train_swing(symbols: list[str], model_dir: str) -> None:
     logger.info("=== Training XGB_SWING_v1 (EnsembleModel) ===")
 
+    validator = LabelValidator()
     all_X: list[pd.DataFrame] = []
     all_y: list[pd.Series]    = []
 
@@ -181,6 +196,12 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
         if len(combined) < 30:
             continue
 
+        # Validate label distribution before including in training set
+        label_stats = validator.validate_label_distribution(combined["__label__"], min_samples=30)
+        if not label_stats["valid"]:
+            logger.warning(f"  {sym}: label validation failed — skipping")
+            continue
+
         all_X.append(combined[SWING_FEATURES])
         all_y.append(combined["__label__"].astype(int))
         logger.info(f"  {sym}: {len(combined)} rows, win_rate={combined['__label__'].mean():.2%}")
@@ -192,6 +213,12 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
     X = pd.concat(all_X, ignore_index=True)
     y = pd.concat(all_y, ignore_index=True)
     logger.info(f"Total SWING training rows: {len(X)}, overall win_rate={y.mean():.2%}")
+
+    # Final validation on combined dataset
+    final_stats = validator.validate_label_distribution(y, min_samples=100)
+    if not final_stats["valid"]:
+        logger.error("Combined SWING label validation failed — aborting")
+        return
 
     model    = EnsembleModel(feature_cols=SWING_FEATURES)
     save_dir = os.path.join(model_dir, "XGB_SWING_v1")
@@ -205,6 +232,7 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
 def train_intraday(symbols: list[str], model_dir: str) -> None:
     logger.info("=== Training LGBM_INTRADAY_v1 ===")
 
+    validator = LabelValidator()
     all_X: list[pd.DataFrame] = []
     all_y: list[pd.Series]    = []
 
@@ -225,6 +253,12 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
         if len(combined) < 30:
             continue
 
+        # Validate label distribution before including in training set
+        label_stats = validator.validate_label_distribution(combined["__label__"], min_samples=30)
+        if not label_stats["valid"]:
+            logger.warning(f"  {sym}: label validation failed — skipping")
+            continue
+
         all_X.append(combined[INTRADAY_FEATURES])
         all_y.append(combined["__label__"].astype(int))
         logger.info(f"  {sym}: {len(combined)} rows, win_rate={combined['__label__'].mean():.2%}")
@@ -236,6 +270,12 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
     X = pd.concat(all_X, ignore_index=True)
     y = pd.concat(all_y, ignore_index=True)
     logger.info(f"Total INTRADAY training rows: {len(X)}, overall win_rate={y.mean():.2%}")
+
+    # Final validation on combined dataset
+    final_stats = validator.validate_label_distribution(y, min_samples=100)
+    if not final_stats["valid"]:
+        logger.error("Combined INTRADAY label validation failed — aborting")
+        return
 
     model     = BaseLogistic(n_splits=5)
     save_path = os.path.join(model_dir, "LGBM_INTRADAY_v1.joblib")

@@ -544,6 +544,7 @@ class TradingOrchestrator:
                 confidence_score=signal.confidence,
                 last_price=last_price,
                 atr=atr,
+                chunk_index=i,  # distinguishes TWAP siblings from true duplicates
             )
             # Assert to prevent side inversion bugs
             assert order.side.name.upper() == (

@@ -15,6 +15,7 @@ This is the WHAT layer — decides what orders to place.
 The EMS (Execution Management System) handles HOW to execute them.
 """
 
+import hashlib
 import threading
 import time
 import uuid
@@ -61,6 +62,52 @@ class OrderType(str, Enum):
     LIMIT = "limit"
     STOP = "stop"
     STOP_LIMIT = "stop_limit"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic client_order_id
+#
+# BUG FIXED: create_order() used to fall back to str(uuid.uuid4())[:8] when
+# no client_order_id was supplied. Since orchestrator.py NEVER passes one,
+# every single order — including retries of the exact same signal — got a
+# brand new random ID. The wash-trade/dedup guard (_wash_guard.is_duplicate)
+# keys off client_order_id, so it could never detect a true duplicate: the
+# ID it was deduping against was never the same value twice.
+#
+# Fix: derive client_order_id deterministically from order identity
+# (symbol, side, setup_type, price rounded to paise, and a coarse time
+# bucket). Two orders for the same signal within the same time bucket now
+# collide on purpose and get caught by the dedup guard. A new time bucket
+# (default 5s) allows a legitimately new signal through.
+# ---------------------------------------------------------------------------
+
+def make_client_order_id(
+    symbol: str,
+    side: "OrderSide | str",
+    setup_type: str,
+    price: float,
+    quantity: int,
+    time_bucket_sec: float = 5.0,
+    chunk_index: int = 0,
+) -> str:
+    """
+    Build a deterministic, idempotent client_order_id.
+
+    Same (symbol, side, setup_type, price, quantity, chunk_index) within the
+    same time_bucket_sec window always produces the same ID — enabling the
+    dedup guard to actually catch duplicate submissions (e.g. a signal that
+    fires twice due to a retry, a re-run cycle, or a race condition).
+
+    chunk_index distinguishes TWAP-sliced child orders from the same parent
+    signal so legitimate sibling chunks are NOT deduped against each other.
+    """
+    side_str = side.value if hasattr(side, "value") else str(side)
+    bucket = int(time.time() // time_bucket_sec)
+    price_paise = round(price * 100)  # avoid float repr drift across calls
+
+    raw = f"{symbol}|{side_str}|{setup_type}|{price_paise}|{quantity}|{chunk_index}|{bucket}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"COID-{digest[:16]}"
 
 
 @dataclass
@@ -467,11 +514,21 @@ class OrderManagementSystem:
         adv: float = 0.0,
         last_price: float = 0.0,
         atr: float = 0.0,
+        chunk_index: int = 0,
+        idempotency_window_sec: float = 5.0,
     ) -> ManagedOrder:
         """
         Create and validate a new order.
 
         Returns the order with status VALIDATED (ready for EMS) or REJECTED.
+
+        client_order_id: if not supplied, a DETERMINISTIC id is derived from
+        (symbol, side, setup_type, price, quantity, chunk_index, time bucket)
+        via make_client_order_id(). This is what makes the dedup/wash-trade
+        guard actually work — a retried or duplicated signal within the same
+        idempotency_window_sec collides on the same id and gets rejected.
+        chunk_index must be passed by callers slicing one parent order into
+        multiple child orders (e.g. TWAP), so siblings don't collide.
         """
         order = ManagedOrder(
             symbol=symbol,
@@ -484,7 +541,16 @@ class OrderManagementSystem:
             target_price=target_price,
             setup_type=setup_type,
             confidence_score=confidence_score,
-            client_order_id=client_order_id or str(uuid.uuid4())[:8],
+            client_order_id=client_order_id
+            or make_client_order_id(
+                symbol=symbol,
+                side=side,
+                setup_type=setup_type,
+                price=price,
+                quantity=quantity,
+                time_bucket_sec=idempotency_window_sec,
+                chunk_index=chunk_index,
+            ),
         )
 
         # Initialize locks

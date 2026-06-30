@@ -1,20 +1,35 @@
 """
-FastAPI Backend for Quant Terminal
+FastAPI Backend — Quant Terminal
 
-Provides API endpoints for the trading terminal frontend.
+Endpoints:
+  GET  /                          health ping
+  GET  /api/health                liveness
+  GET  /api/health/status         component health
+  GET  /api/indices               NSE index ticks
+  GET  /api/stocks                all stocks (sector/search filter)
+  GET  /api/stocks/{symbol}       single stock
+  GET  /api/predictions           ML predictions (filter by result)
+  GET  /api/calibration           win-rate bucketed by confidence
+  GET  /api/ticker                top-10 movers for ticker bar
+  GET  /api/sectors               sector heatmap
+  GET  /api/metrics/performance   portfolio performance metrics
+  GET  /api/metrics/model         model IC / accuracy metrics
+  GET  /api/oms/orders            open orders (read-only)
+  GET  /api/news/{symbol}         news headlines
+  POST /api/auth/login            dev-only token (disabled in LIVE env)
+  GET  /metrics                   Prometheus scrape endpoint
 """
+
+from __future__ import annotations
 
 import os
 import sys
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-
-# from api.auth import router as auth_router, verify_token
 from prometheus_client import make_asgi_app
-
-from utils.time_utils import now_ist
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -27,9 +42,13 @@ from database.connection import (
     initialize_pool,
 )
 from utils.logger import get_logger
+from utils.time_utils import now_ist
 
 logger = get_logger("api")
 
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="Quant Terminal API",
@@ -37,54 +56,50 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:8080", "*"],
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
-# app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.mount("/metrics", make_asgi_app())
 
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
 
-# Initialize database on startup
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database connection and create tables."""
     env = os.getenv("ENV", "LOCAL")
     if env in ("LIVE", "PAPER") and "api.mock_data" in sys.modules:
         logger.critical("FATAL: mock_data module loaded in production environment!")
         sys.exit(1)
-
     try:
         initialize_pool()
         create_tables()
-        logger.info("Database initialized successfully")
+        logger.info("Database initialized")
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
+        logger.error(f"Database init failed: {e}")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Close database connections on shutdown."""
     from database.connection import close_all_connections
-
     close_all_connections()
     logger.info("Database connections closed")
 
 
-# ═══════════════════ DATA MODELS ═══════════════════
-from pydantic import BaseModel
-
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
 
 class IndexData(BaseModel):
+    id: str
     name: str
     value: float
     change: float
-    id: str
 
 
 class StockData(BaseModel):
@@ -97,8 +112,6 @@ class StockData(BaseModel):
     market_cap: str
     sector: str
     signal: str
-    high_52w: float
-    low_52w: float
 
 
 class PredictionData(BaseModel):
@@ -107,6 +120,9 @@ class PredictionData(BaseModel):
     prediction: str
     horizon: str
     confidence: float
+    entry_price: float | None = None
+    stop_loss: float | None = None
+    target_price: float | None = None
     actual: str | None = None
     result: str | None = None
     reason: str | None = None
@@ -125,364 +141,383 @@ class MetricData(BaseModel):
     color: str
 
 
-# ═══════════════════ MOCK DATA REMOVED ═══════════════════
-# Institutional policy requires API to fail with 503 instead of returning mock data.
+class TickerItem(BaseModel):
+    name: str
+    value: float
+    change: float
+    up: bool
 
 
-# ═══════════════════ API ENDPOINTS ═══════════════════
+class SectorItem(BaseModel):
+    name: str
+    change: float
+    top_stock: str
+    volume: int
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _to_float(v, default: float = 0.0) -> float:
+    try:
+        return float(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_int(v, default: int = 0) -> int:
+    try:
+        return int(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _stock_from_row(p: dict) -> StockData:
+    return StockData(
+        symbol=p["symbol"],
+        name=p.get("name") or p["symbol"],
+        price=_to_float(p.get("price")),
+        change=_to_float(p.get("change")),
+        change_pct=_to_float(p.get("change_pct")),
+        volume=_to_int(p.get("volume")),
+        market_cap=str(p.get("market_cap") or ""),
+        sector=str(p.get("sector") or "Unknown"),
+        signal=str(p.get("signal") or "HOLD"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 @app.get("/")
 def root():
-    """Root endpoint."""
-    return {"message": "Quant Terminal API", "version": "1.0.0"}
+    return {"status": "ok", "version": "1.0.0", "timestamp": now_ist().isoformat()}
 
 
 @app.get("/api/health")
 def health_check():
-    """Health check endpoint."""
     return {"status": "healthy", "timestamp": now_ist().isoformat()}
+
+
+@app.get("/api/health/status", response_model=list[HealthStatus])
+def get_system_health():
+    """Component-level health. Checks DB connectivity and model availability."""
+    from pathlib import Path
+    statuses = []
+
+    # Database
+    try:
+        get_latest_prices()
+        statuses.append(HealthStatus(name="Database", status="healthy", value="Connected", message="Query successful"))
+    except Exception as e:
+        statuses.append(HealthStatus(name="Database", status="degraded", value="Error", message=str(e)[:120]))
+
+    # Model artifacts
+    model_dir = Path(os.getenv("MODEL_DIR", "models/saved"))
+    model_files = list(model_dir.glob("*.pkl")) if model_dir.exists() else []
+    if model_files:
+        statuses.append(HealthStatus(
+            name="ML Models",
+            status="healthy",
+            value=f"{len(model_files)} loaded",
+            message=", ".join(f.stem for f in model_files),
+        ))
+    else:
+        statuses.append(HealthStatus(
+            name="ML Models",
+            status="degraded",
+            value="Missing",
+            message=f"No .pkl files in {model_dir}. Run training/train_models.py.",
+        ))
+
+    # Data pipeline freshness (rough check: latest price timestamp)
+    try:
+        prices = get_latest_prices()
+        msg = f"{len(prices)} symbols in price table" if prices else "No price data"
+        statuses.append(HealthStatus(name="Data Pipeline", status="healthy" if prices else "degraded", value="OK", message=msg))
+    except Exception as e:
+        statuses.append(HealthStatus(name="Data Pipeline", status="degraded", value="Error", message=str(e)[:120]))
+
+    statuses.append(HealthStatus(name="API Gateway", status="healthy", value="100%", message="Serving requests"))
+    return statuses
 
 
 @app.get("/api/indices", response_model=list[IndexData])
 def api_get_indices():
-    """Get index data."""
     try:
         from database.connection import get_indices
-
-        indices_data = get_indices()
+        rows = get_indices()
         return [
             IndexData(
-                id=idx.get("id", ""),
-                name=idx.get("name", ""),
-                value=float(idx.get("value", 0)),
-                change=float(idx.get("change", 0)),
+                id=str(r.get("id", "")),
+                name=r.get("name", ""),
+                value=_to_float(r.get("value")),
+                change=_to_float(r.get("change")),
             )
-            for idx in indices_data
+            for r in rows
         ]
     except Exception as e:
-        logger.error(f"Error fetching indices: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
+        logger.error(f"get_indices failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/api/stocks", response_model=list[StockData])
-def get_stocks(sector: str | None = None, search: str | None = None):
-    """
-    Get stock data.
-
-    Args:
-        sector: Filter by sector
-        search: Search by symbol or name
-    """
+def get_stocks(
+    sector: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+):
     try:
         prices = get_latest_prices()
-
-        # Convert dict to StockData
-        stocks = []
-        for p in prices:
-            stocks.append(
-                StockData(
-                    symbol=p["symbol"],
-                    name=p.get("name") or p["symbol"],
-                    price=float(p.get("price") or 0),
-                    change=float(p.get("change") or 0),
-                    change_pct=float(p.get("change_pct") or 0),
-                    volume=int(p.get("volume") or 0),
-                    market_cap=str(p.get("market_cap") or ""),
-                    sector=str(p.get("sector") or "Unknown"),
-                    signal="HOLD",
-                    high_52w=float(p.get("high_52w") or 0),
-                    low_52w=float(p.get("low_52w") or 0),
-                )
-            )
+        stocks = [_stock_from_row(p) for p in prices]
 
         if sector:
-            stocks = [s for s in stocks if s.sector == sector]
+            stocks = [s for s in stocks if s.sector.lower() == sector.lower()]
 
         if search:
-            search_lower = search.lower()
-            stocks = [
-                s
-                for s in stocks
-                if search_lower in s.symbol.lower() or search_lower in s.name.lower()
-            ]
+            q = search.lower()
+            stocks = [s for s in stocks if q in s.symbol.lower() or q in s.name.lower()]
 
         return stocks
     except Exception as e:
-        logger.error(f"Error fetching stocks: {e}", exc_info=True)
+        logger.error(f"get_stocks failed: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/api/stocks/{symbol}", response_model=StockData)
 def get_stock(symbol: str):
-    """Get stock data by symbol."""
     try:
         p = get_stock_price(symbol.upper())
-        if p:
-            return StockData(
-                symbol=p["symbol"],
-                name=p.get("name") or p["symbol"],
-                price=float(p.get("price") or 0),
-                change=float(p.get("change") or 0),
-                change_pct=float(p.get("change_pct") or 0),
-                volume=int(p.get("volume") or 0),
-                market_cap=str(p.get("market_cap") or ""),
-                sector=str(p.get("sector") or "Unknown"),
-                signal="HOLD",
-                high_52w=float(p.get("high_52w") or 0),
-                low_52w=float(p.get("low_52w") or 0),
-            )
+        if not p:
+            raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
+        return _stock_from_row(p)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error fetching stock: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
+        logger.error(f"get_stock({symbol}) failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/api/predictions", response_model=list[PredictionData])
-def api_get_predictions(filter: str | None = None):
-    """
-    Get ML predictions.
-
-    Args:
-        filter: Filter by result (correct, wrong, pending)
-    """
+def api_get_predictions(
+    filter: str | None = Query(default=None, description="correct | wrong | pending"),
+    symbol: str | None = Query(default=None),
+    horizon: str | None = Query(default=None, description="INTRADAY | SWING | LONGTERM"),
+    limit: int = Query(default=200, le=1000),
+):
     try:
-        # get_predictions is imported from database.connection
-        db_preds = get_predictions(result=filter)
+        rows = get_predictions(result=filter, limit=limit)
+
+        if symbol:
+            rows = [r for r in rows if r.get("symbol", "").upper() == symbol.upper()]
+        if horizon:
+            rows = [r for r in rows if r.get("horizon", "").upper() == horizon.upper()]
+
         result = []
-        for p in db_preds:
-            result.append(
-                PredictionData(
-                    date=p.get("prediction_date").isoformat() if p.get("prediction_date") else "",
-                    symbol=p["symbol"],
-                    prediction=p["prediction"],
-                    horizon=p["horizon"],
-                    confidence=float(p["confidence"]) if p.get("confidence") else 0.0,
-                    actual=p.get("actual"),
-                    result=p.get("result"),
-                    reason=p.get("reason"),
-                )
-            )
+        for p in rows:
+            pd_val = p.get("prediction_date") or p.get("prediction_time")
+            result.append(PredictionData(
+                date=pd_val.isoformat() if pd_val else "",
+                symbol=p["symbol"],
+                prediction=p["prediction"],
+                horizon=p["horizon"],
+                confidence=_to_float(p.get("confidence")),
+                entry_price=_to_float(p.get("entry_price")) or None,
+                stop_loss=_to_float(p.get("stop_loss")) or None,
+                target_price=_to_float(p.get("target_price")) or None,
+                actual=p.get("actual"),
+                result=p.get("result"),
+                reason=p.get("reason"),
+            ))
         return result
     except Exception as e:
-        logger.error(f"Error fetching predictions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-
-@app.get("/api/health/status", response_model=list[HealthStatus])
-def api_get_system_health():
-    """Get system health status."""
-    try:
-        return [
-            HealthStatus(
-                name="API Gateway",
-                status="healthy",
-                value="99.9%",
-                message="All systems operational",
-            ),
-            HealthStatus(
-                name="Data Pipeline", status="healthy", value="Syncing", message="Last sync 2m ago"
-            ),
-            HealthStatus(
-                name="ML Models", status="healthy", value="Loaded", message="Models up to date"
-            ),
-            HealthStatus(
-                name="Database", status="healthy", value="Connected", message="Primary DB active"
-            ),
-        ]
-    except Exception as e:
-        logger.error(f"Error fetching system health: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-
-@app.get("/api/metrics/performance", response_model=list[MetricData])
-def get_api_performance_metrics():
-    """Get performance metrics."""
-    from database.connection import get_performance_metrics as get_perf
-
-    try:
-        metrics = get_perf()
-        if metrics:
-            return [MetricData(**m) for m in metrics]
-    except Exception as e:
-        logger.error(f"Error fetching performance metrics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-
-@app.get("/api/metrics/model", response_model=list[MetricData])
-def get_api_model_metrics():
-    """Get model metrics."""
-    from database.connection import get_model_metrics as get_mod
-
-    try:
-        metrics = get_mod()
-        if metrics:
-            return [MetricData(**m) for m in metrics]
-    except Exception as e:
-        logger.error(f"Error fetching model metrics: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-
-@app.get("/api/ticker")
-def get_api_ticker_data():
-    """Get ticker bar data."""
-    try:
-        prices = get_latest_prices()
-        if not prices:
-            return []
-
-        stocks = sorted(prices, key=lambda x: float(x.get("change_pct") or 0), reverse=True)
-        return [
-            {
-                "name": s["symbol"],
-                "value": float(s.get("price") or 0),
-                "change": float(s.get("change_pct") or 0),
-                "up": float(s.get("change_pct") or 0) >= 0,
-            }
-            for s in stocks[:10]
-        ]
-    except Exception as e:
-        logger.error(f"Error fetching ticker data: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-
-@app.get("/api/sectors")
-def get_api_sector_data():
-    """Get sector heatmap data."""
-    try:
-        data = get_sector_performance()
-        if data:
-            return data
-
-        # Calculate sector performance from stock prices
-        prices = get_latest_prices()
-        if not prices:
-            return []
-
-        sectors_map = {}
-        for s in prices:
-            sector = s.get("sector") or "Unknown"
-            if sector not in sectors_map:
-                sectors_map[sector] = {
-                    "perf": 0.0,
-                    "count": 0,
-                    "top_stock": s["symbol"],
-                    "top_change": float(s.get("change_pct") or 0),
-                    "vol": 0,
-                }
-
-            change_pct = float(s.get("change_pct") or 0)
-            sectors_map[sector]["perf"] += change_pct
-            sectors_map[sector]["count"] += 1
-            sectors_map[sector]["vol"] += int(s.get("volume") or 0)
-
-            if change_pct > sectors_map[sector]["top_change"]:
-                sectors_map[sector]["top_change"] = change_pct
-                sectors_map[sector]["top_stock"] = s["symbol"]
-
-        return [
-            {
-                "name": sec,
-                "change": data["perf"] / max(1, data["count"]),
-                "top_stock": data["top_stock"],
-                "volume": data["vol"],
-            }
-            for sec, data in sectors_map.items()
-        ]
-    except Exception as e:
-        logger.error(f"Error fetching sector data: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
-
-
-@app.get("/api/oms/orders")
-def get_orders():
-    return []
+        logger.error(f"get_predictions failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/api/calibration")
 def api_get_calibration():
-    """Get model calibration data."""
+    """
+    Actual win-rate bucketed by model confidence.
+    Only counts resolved predictions (result = correct | wrong).
+    Use this to verify the model is calibrated — bucket win rate should
+    approximate the confidence midpoint.
+    """
     try:
-        db_preds = get_predictions(limit=1000)
-        buckets = {
+        rows = get_predictions(limit=2000)
+        buckets: dict[str, list[int]] = {
             "50-60": [0, 0],
             "60-70": [0, 0],
             "70-80": [0, 0],
             "80-90": [0, 0],
             "90-100": [0, 0],
         }
-
-        for p in db_preds:
-            conf = float(p.get("confidence") or 0.0) * 100
+        for p in rows:
+            if p.get("result") not in ("correct", "wrong"):
+                continue
+            conf = _to_float(p.get("confidence")) * 100
             if conf < 50:
                 continue
+            key = (
+                "50-60" if conf < 60 else
+                "60-70" if conf < 70 else
+                "70-80" if conf < 80 else
+                "80-90" if conf < 90 else
+                "90-100"
+            )
+            buckets[key][1] += 1
+            if p.get("result") == "correct":
+                buckets[key][0] += 1
 
-            bucket_key = None
-            if 50 <= conf < 60:
-                bucket_key = "50-60"
-            elif 60 <= conf < 70:
-                bucket_key = "60-70"
-            elif 70 <= conf < 80:
-                bucket_key = "70-80"
-            elif 80 <= conf < 90:
-                bucket_key = "80-90"
-            elif 90 <= conf <= 100:
-                bucket_key = "90-100"
-
-            if bucket_key and p.get("result") in ("correct", "wrong"):
-                buckets[bucket_key][1] += 1
-                if p.get("result") == "correct":
-                    buckets[bucket_key][0] += 1
-
-        calibration = {}
-        for k, v in buckets.items():
-            calibration[k] = round(v[0] / v[1], 2) if v[1] > 0 else 0.0
-
-        return {"calibration": calibration}
+        return {
+            "calibration": {
+                k: round(v[0] / v[1], 3) if v[1] > 0 else None
+                for k, v in buckets.items()
+            },
+            "sample_counts": {k: v[1] for k, v in buckets.items()},
+        }
     except Exception as e:
-        logger.error(f"Error calculating calibration: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database unavailable")
+        logger.error(f"get_calibration failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@app.get("/api/ticker", response_model=list[TickerItem])
+def get_ticker_data(n: int = Query(default=10, le=50)):
+    """Top n movers by absolute change_pct for the ticker bar."""
+    try:
+        prices = get_latest_prices()
+        if not prices:
+            return []
+        sorted_prices = sorted(prices, key=lambda x: abs(_to_float(x.get("change_pct"))), reverse=True)
+        return [
+            TickerItem(
+                name=s["symbol"],
+                value=_to_float(s.get("price")),
+                change=_to_float(s.get("change_pct")),
+                up=_to_float(s.get("change_pct")) >= 0,
+            )
+            for s in sorted_prices[:n]
+        ]
+    except Exception as e:
+        logger.error(f"get_ticker_data failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@app.get("/api/sectors", response_model=list[SectorItem])
+def get_sector_data():
+    try:
+        data = get_sector_performance()
+        if data:
+            return [SectorItem(**row) for row in data]
+
+        # Compute from price table if no precomputed sector table
+        prices = get_latest_prices()
+        if not prices:
+            return []
+
+        sectors: dict[str, dict] = {}
+        for s in prices:
+            sec = s.get("sector") or "Unknown"
+            chg = _to_float(s.get("change_pct"))
+            vol = _to_int(s.get("volume"))
+            if sec not in sectors:
+                sectors[sec] = {"total_chg": 0.0, "count": 0, "top_stock": s["symbol"], "top_chg": chg, "vol": 0}
+            sectors[sec]["total_chg"] += chg
+            sectors[sec]["count"] += 1
+            sectors[sec]["vol"] += vol
+            if chg > sectors[sec]["top_chg"]:
+                sectors[sec]["top_chg"] = chg
+                sectors[sec]["top_stock"] = s["symbol"]
+
+        return [
+            SectorItem(
+                name=sec,
+                change=round(v["total_chg"] / max(1, v["count"]), 3),
+                top_stock=v["top_stock"],
+                volume=v["vol"],
+            )
+            for sec, v in sectors.items()
+        ]
+    except Exception as e:
+        logger.error(f"get_sector_data failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@app.get("/api/metrics/performance", response_model=list[MetricData])
+def get_performance_metrics():
+    try:
+        from database.connection import get_performance_metrics as _get
+        rows = _get()
+        return [MetricData(**r) for r in rows] if rows else []
+    except Exception as e:
+        logger.error(f"get_performance_metrics failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@app.get("/api/metrics/model", response_model=list[MetricData])
+def get_model_metrics():
+    try:
+        from database.connection import get_model_metrics as _get
+        rows = _get()
+        return [MetricData(**r) for r in rows] if rows else []
+    except Exception as e:
+        logger.error(f"get_model_metrics failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@app.get("/api/oms/orders")
+def get_orders():
+    """
+    Read-only view of open OMS orders.
+    The OMS write path is internal — this endpoint exposes order state
+    for dashboard monitoring only.
+    """
+    try:
+        from database.connection import get_open_orders
+        return get_open_orders()
+    except ImportError:
+        return []
+    except Exception as e:
+        logger.error(f"get_orders failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.get("/api/news/{symbol}")
 def get_news(symbol: str):
-    """Get news for a stock symbol."""
-    # Return mock news data
-    return [
-        {
-            "title": f"{symbol} reports strong quarterly results",
-            "summary": f"{symbol} announced better than expected earnings driven by robust performance in core segments.",
-            "source": "Economic Times",
-            "timestamp": "2026-06-28T10:30:00Z",
-            "sentiment": "positive",
-        },
-        {
-            "title": f"Analysts maintain buy rating on {symbol}",
-            "summary": f"Multiple brokerage firms have reiterated their buy rating on {symbol} with a target price upside of 15%.",
-            "source": "Moneycontrol",
-            "timestamp": "2026-06-28T09:15:00Z",
-            "sentiment": "positive",
-        },
-        {
-            "title": f"{symbol} announces strategic partnership",
-            "summary": f"{symbol} has entered into a strategic partnership to expand its market presence in emerging sectors.",
-            "source": "Business Standard",
-            "timestamp": "2026-06-28T08:45:00Z",
-            "sentiment": "neutral",
-        },
-    ]
+    """
+    News headlines for a symbol.
+    Reads from the RSS ingestion table if available.
+    Returns empty list rather than mock data when table is empty.
+    """
+    try:
+        from database.connection import get_news_for_symbol
+        return get_news_for_symbol(symbol.upper())
+    except ImportError:
+        logger.warning("get_news_for_symbol not implemented in database.connection")
+        return []
+    except Exception as e:
+        logger.error(f"get_news({symbol}) failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
 
 @app.post("/api/auth/login")
 def login():
-    """Mock login endpoint - returns a dummy token."""
+    """
+    Development-only token endpoint.
+    Disabled in LIVE and PAPER environments — requests will 403.
+    """
+    env = os.getenv("ENV", "LOCAL")
+    if env in ("LIVE", "PAPER"):
+        raise HTTPException(status_code=403, detail="Auth endpoint disabled in production. Use the broker SSO flow.")
     return {
-        "access_token": "mock_token_for_development",
+        "access_token": "dev_token_not_for_production",
         "token_type": "bearer",
         "expires_in": 3600,
+        "warning": "This token is for local development only.",
     }
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)

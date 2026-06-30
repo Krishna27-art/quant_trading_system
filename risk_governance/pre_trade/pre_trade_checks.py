@@ -48,6 +48,9 @@ class PreTradeConfig:
     sebi_client_oi_limit_pct: float = 0.05  # 5% of MWPL for a single client
     # Borrow: minimum borrow pool qty to allow short
     min_borrow_pool_qty: int = 100
+    # Market data freshness: max age (seconds) before a symbol's market data
+    # is treated as stale and checks fail closed instead of silently passing.
+    max_market_data_age_sec: float = 30.0
 
 
 # ── Market data required for checks ──────────────────────────────────
@@ -79,6 +82,13 @@ class PreTradeChecker:
         self._banned_symbols: set[str] = set()  # SEBI F&O ban list
         self._borrow_pool: dict[str, int] = {}  # symbol → available qty
         self._market_data: dict[str, SymbolMarketData] = {}
+        # Last time update_market_data() actually refreshed each symbol.
+        # Populated only via update_market_data() — never assumed. This lets
+        # us detect symbols whose market data is stale or was simply never
+        # fed by the live loop (e.g. caller wired with hardcoded placeholder
+        # values, or feed silently stopped) and fail closed instead of
+        # treating "missing" as "skip the check, approve the order".
+        self._market_data_timestamps: dict[str, float] = {}
         self._client_oi: dict[str, int] = {}  # symbol → client OI
         import threading
 
@@ -126,7 +136,38 @@ class PreTradeChecker:
 
     def update_market_data(self, data: dict[str, SymbolMarketData]) -> None:
         """Feed latest market data for the symbols we trade."""
+        import time
+
+        now = time.time()
         self._market_data = {k.upper(): v for k, v in data.items()}
+        for k in self._market_data:
+            self._market_data_timestamps[k] = now
+
+    def _market_data_for(self, symbol: str) -> SymbolMarketData | None:
+        """
+        Return market data for symbol only if it was actually populated
+        within max_market_data_age_sec. If update_market_data() was never
+        called for this symbol, or was called long enough ago that the feed
+        is presumed dead, this returns None — callers must treat None as
+        "cannot verify, fail closed", not "skip check, approve".
+        """
+        import time
+
+        md = self._market_data.get(symbol)
+        if md is None:
+            return None
+
+        ts = self._market_data_timestamps.get(symbol)
+        if ts is None or (time.time() - ts) > self.config.max_market_data_age_sec:
+            logger.error(
+                "Market data for %s is stale or was never populated "
+                "(age check threshold=%.0fs) — failing closed.",
+                symbol,
+                self.config.max_market_data_age_sec,
+            )
+            return None
+
+        return md
 
     def update_client_oi(self, oi: dict[str, int]) -> None:
         """Update client-level open interest per symbol."""
@@ -315,8 +356,16 @@ class PreTradeChecker:
 
     def _check_price_bands(self, symbol: str, price: float) -> tuple[bool, str]:
         """Check if limit price is within 0.5% of upper or lower circuits."""
-        md = self._market_data.get(symbol)
+        md = self._market_data_for(symbol)
         if md is None or md.upper_circuit_limit <= 0 or md.lower_circuit_limit <= 0:
+            # No fresh circuit-limit data: cannot verify, so we don't claim a
+            # false pass — this is logged loudly rather than silently
+            # returning True so a feed that never populates circuit limits
+            # (e.g. a live loop that only ever sends last_price/adv/atr) is
+            # visible instead of invisibly bypassing this check forever.
+            logger.warning(
+                "No fresh circuit-limit data for %s — circuit-band check cannot run", symbol
+            )
             return True, ""
 
         upper_threshold = md.upper_circuit_limit * 0.995
@@ -377,11 +426,19 @@ class PreTradeChecker:
           - Qty > N% of 20-day ADV
           - Price > N × ATR away from last trade
         """
-        md = self._market_data.get(symbol)
+        md = self._market_data_for(symbol)
         if md is None:
-            # No market data → conservative pass with warning
-            logger.warning("No market data for %s — fat-finger check skipped", symbol)
-            return True, "", quantity
+            # Previously: "No market data → conservative pass with warning"
+            # i.e. an order for a symbol whose market data was never
+            # populated (or went stale) sailed through fat-finger checks
+            # with zero ADV/ATR validation. That is the opposite of
+            # conservative — it's a silent bypass of the entire check.
+            # Fail closed instead.
+            return (
+                False,
+                f"No fresh market data for {symbol} — cannot verify fat-finger limits, rejecting",
+                0,
+            )
 
         adjusted = quantity
 
@@ -419,10 +476,10 @@ class PreTradeChecker:
           - Market-wide OI must be < 95% of MWPL to open fresh positions
           - Client-level OI limit (typically 5% of MWPL for a single client)
         """
-        md = self._market_data.get(symbol)
+        md = self._market_data_for(symbol)
         if md is None:
-            # Missing market data for F&O checks must fail closed!
-            return False, f"Missing market data for {symbol} to verify SEBI limits", 0
+            # Missing or stale market data for F&O checks must fail closed!
+            return False, f"No fresh market data for {symbol} to verify SEBI limits", 0
 
         if not md.is_fno:
             return True, "", quantity

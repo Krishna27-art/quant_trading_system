@@ -77,9 +77,30 @@ def execute_kill_switch(dry_run: bool = False) -> dict[str, Any]:
         logger.warning("Kill switch dry run completed")
         return event
 
+    # Import at module load time, not inside the try/except below. Previously
+    # `import redis` lived inside the same try block as the publish call, so
+    # a missing `redis` package (ImportError) was caught by the same
+    # `except Exception` as a transient publish failure, logged as a normal
+    # error, and the function returned a dict still tagged
+    # "event": "KILL_EXECUTED" — i.e. the single emergency stop mechanism
+    # could be completely non-functional (dependency never installed) and
+    # every caller would see what looks like a successful kill event.
     try:
         import redis
+    except ImportError as exc:
+        event["event"] = "KILL_FAILED"
+        event["error"] = f"redis package not installed: {exc}"
+        logger.critical(
+            "🚨 KILL SWITCH FAILED: redis is not installed — cannot publish "
+            "trigger_kill_switch command. THE KILL SWITCH IS NON-FUNCTIONAL.",
+            error=str(exc),
+        )
+        _append_kill_log(event)
+        raise KillSwitchError(
+            "Kill switch could not execute: redis package not installed"
+        ) from exc
 
+    try:
         r = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 
         # Publish to the system control channel which TradingOrchestrator will listen to
@@ -92,8 +113,23 @@ def execute_kill_switch(dry_run: bool = False) -> dict[str, Any]:
         _append_kill_log(event)
         return event
     except Exception as e:
-        logger.error(f"Failed to publish kill switch command to Redis: {e}", exc_info=True)
-        return event
+        # Previously this branch logged the failure but still returned the
+        # original `event` dict, whose "event" field was already set to
+        # "KILL_EXECUTED" above. A caller inspecting only the returned dict
+        # (not the logs) would see a normal-looking success payload for a
+        # kill switch that never actually published anything. Now the
+        # event is explicitly marked failed, persisted to the audit log as
+        # a failure, and the exception is re-raised so this cannot be
+        # silently swallowed by an upstream `except Exception: pass`.
+        event["event"] = "KILL_FAILED"
+        event["error"] = str(e)
+        logger.critical(
+            f"🚨 KILL SWITCH FAILED to publish command to Redis: {e}. "
+            f"THE KILL SWITCH DID NOT EXECUTE.",
+            exc_info=True,
+        )
+        _append_kill_log(event)
+        raise KillSwitchError(f"Kill switch failed to publish to Redis: {e}") from e
 
 
 def main():

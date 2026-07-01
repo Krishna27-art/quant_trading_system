@@ -11,9 +11,13 @@ from sqlalchemy.orm import Session
 
 from database.db_sync import SessionLocal
 from database.models import Prediction
+from prediction_intelligence.calibration import fit_calibrator
 from utils.logger import get_logger
 
 logger = get_logger("outcome_resolver")
+
+# Minimum resolved predictions per timeframe before calibration is triggered
+CALIBRATION_MIN_SAMPLES = 100
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +273,35 @@ def _log_win_rate(db: Session) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _update_calibrators(db: Session) -> None:
+    """
+    Refit probability calibrators using all resolved predictions.
+    Called after each resolution run. Only triggers once >= CALIBRATION_MIN_SAMPLES
+    resolved predictions exist per timeframe.
+    """
+    for tf in ("INTRADAY", "SWING", "LONGTERM"):
+        resolved = (
+            db.query(Prediction)
+            .filter(
+                Prediction.actual_outcome.in_(["WIN", "LOSS"]),
+                Prediction.horizon == tf,
+                Prediction.confidence.isnot(None),
+            )
+            .all()
+        )
+        if len(resolved) < CALIBRATION_MIN_SAMPLES:
+            logger.debug(
+                f"Calibration skipped for {tf}: only {len(resolved)} resolved "
+                f"predictions (need {CALIBRATION_MIN_SAMPLES})"
+            )
+            continue
+
+        raw_probs = [float(p.confidence) for p in resolved]
+        outcomes  = [1 if p.actual_outcome == "WIN" else 0 for p in resolved]
+        fit_calibrator(raw_probs, outcomes, timeframe=tf)
+        logger.info(f"Calibrator updated for {tf} using {len(resolved)} resolved predictions")
+
+
 def resolve_unresolved_predictions() -> None:
     """
     Fetch all OPEN predictions from DB, attempt resolution, commit results,
@@ -311,6 +344,8 @@ def resolve_unresolved_predictions() -> None:
             f"Resolution run complete: {resolved_count}/{len(unresolved)} resolved."
         )
         _log_win_rate(db)
+        # Refit calibrators with newly resolved data
+        _update_calibrators(db)
 
     except Exception as exc:
         db.rollback()

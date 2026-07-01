@@ -143,13 +143,12 @@ class TradingOrchestrator:
             if self.config.mode == ExecutionMode.LIVE:
                 raise ValueError(f"Configuration errors in LIVE mode: {errors}")
 
-        # New Infrastructure Components
+        # New Infrastructure Components (initialized BEFORE core execution components)
         self.wal_journal = WALJournal()
         self.state_store = RedisStateStore()
         self.alert_manager = AlertManager()
-        self.drop_copy = DropCopyReconciler(DropCopyConfig(), self.oms, self.ems)
 
-        # Risk Governance Components (previously built but never wired in)
+        # Risk Governance Components
         self.circuit_breaker = CircuitBreaker()
         self.portfolio_risk = PortfolioRiskEngine(total_capital=self.config.initial_capital)
         self.historical_var = HistoricalVaR(confidence_level=0.99, lookback_window=252)
@@ -180,6 +179,9 @@ class TradingOrchestrator:
 
         # Wire EMS fills back to OMS
         self.ems.set_on_fill(self.oms.on_fill)
+
+        # DropCopy reconciler — initialized AFTER oms/ems exist
+        self.drop_copy = DropCopyReconciler(DropCopyConfig(), self.oms, self.ems)
 
         # Session state managers (one per instrument)
         self._state_managers: dict[str, SessionStateManager] = {}
@@ -276,7 +278,11 @@ class TradingOrchestrator:
 
         from portfolio_execution.liquidation import SafeLiquidationEngine
 
-        liquidation_engine = SafeLiquidationEngine(self.oms, self.ems)
+        # SafeLiquidationEngine requires: oms, broker, headers, wal
+        # Broker and headers come from EMS in paper/live mode; fall back to None for paper trading.
+        broker = getattr(self.ems, "_broker", None)
+        headers = getattr(self.ems, "_headers", {})
+        liquidation_engine = SafeLiquidationEngine(self.oms, broker, headers, self.wal_journal)
 
         positions_to_close = [
             sym for sym, pos in list(self.oms._positions.items()) if pos.quantity != 0
@@ -286,7 +292,8 @@ class TradingOrchestrator:
         symbols_to_liquidate = list(set(positions_to_close + symbols_with_orders))
 
         liquidation_tasks = [
-            liquidation_engine.trigger_emergency_liquidation(sym) for sym in symbols_to_liquidate
+            # Method is liquidate_symbol(symbol, reason) — not trigger_emergency_liquidation
+            liquidation_engine.liquidate_symbol(sym, reason="KILL_SWITCH") for sym in symbols_to_liquidate
         ]
         import asyncio
 

@@ -1,8 +1,11 @@
 """
-Circuit Limits Detection
+Circuit Limits Detection (Historical Analysis)
 
-Detects upper/lower circuit limits in Indian markets.
+Detects upper/lower circuit limits in Indian markets from historical price data.
 NSE has circuit limits of 5%, 10%, 20% based on stock category.
+
+This module is for historical analysis and backtesting.
+For real-time trading circuit breaker checks, see risk_governance/pre_trade/exchange_circuit_limits.py
 """
 
 from datetime import date

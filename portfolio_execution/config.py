@@ -128,6 +128,9 @@ class TradingConfig:
     db_url: str = os.environ.get("DATABASE_URL", "")
     redis_url: str = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
+    # Capital — used for position sizing and risk calculations
+    initial_capital: float = float(os.environ.get("INITIAL_CAPITAL", "10000000"))  # ₹1 crore default
+
     @classmethod
     def from_env(cls) -> "TradingConfig":
         """Load configuration from environment variables."""

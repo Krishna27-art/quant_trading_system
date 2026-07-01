@@ -285,7 +285,7 @@ class BaseLogistic:
         steps.append((
             "classifier",
             LogisticRegression(
-                penalty="l2",
+                l1_ratio=0,      # equivalent to penalty='l2'; avoids FutureWarning in sklearn ≥1.8
                 C=1.0,
                 max_iter=2000,
                 solver="lbfgs",
@@ -405,7 +405,7 @@ class EnsembleModel:
                 ("imputer",    SimpleImputer(strategy="median")),
                 ("scaler",     StandardScaler()),
                 ("classifier", LogisticRegression(
-                    penalty="l2", C=1.0, max_iter=2000,
+                    l1_ratio=0, C=1.0, max_iter=2000,
                     solver="lbfgs", random_state=42, class_weight="balanced",
                 )),
             ]),
@@ -534,6 +534,13 @@ class ModelRegistry:
 
     _instance: "ModelRegistry | None" = None
 
+    # ── disk path aliases ────────────────────────────────────────────────────
+    # Maps canonical model_version key → actual directory/file name on disk.
+    # Needed when training scripts saved under a different name than the registry key.
+    _DISK_ALIASES: dict[str, str] = {
+        "ENSEMBLE_SWING_v1": "XGB_SWING_v1",
+    }
+
     def __new__(cls, model_dir: str | None = None) -> "ModelRegistry":
         if cls._instance is None:
             obj             = super().__new__(cls)
@@ -564,9 +571,12 @@ class ModelRegistry:
 
         model: BaseLogistic | EnsembleModel
 
+        # Resolve disk name (handles legacy save paths)
+        disk_name = self._DISK_ALIASES.get(model_version, model_version)
+
         if model_version.startswith("ENSEMBLE"):
             model = EnsembleModel(feature_cols=self._feature_cols(timeframe))
-            dir_p = os.path.join(self._model_dir, model_version)
+            dir_p = os.path.join(self._model_dir, disk_name)
             if os.path.isdir(dir_p):
                 model.load(dir_p)
             else:
@@ -575,7 +585,7 @@ class ModelRegistry:
                 )
         else:
             model = BaseLogistic()
-            file_p = os.path.join(self._model_dir, f"{model_version}.joblib")
+            file_p = os.path.join(self._model_dir, f"{disk_name}.joblib")
             if os.path.exists(file_p):
                 model.load(file_p)
             else:

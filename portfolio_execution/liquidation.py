@@ -48,7 +48,7 @@ class SafeLiquidationEngine:
         # STEP 3: Get NET position AFTER all cancels confirmed
         self._state = LiquidationState.LIQUIDATING
         position = self.oms.get_position(symbol)
-        net_qty = position.net_qty if position else 0
+        net_qty = position.quantity if position else 0
 
         if abs(net_qty) < 1:
             self.wal.write("LIQUIDATION_SKIP", {"symbol": symbol, "reason": "already_flat"})
@@ -63,10 +63,24 @@ class SafeLiquidationEngine:
 
         try:
             loop = asyncio.get_running_loop()
-            resp = await loop.run_in_executor(
-                self._executor, lambda: self.broker.market_order_eq(symbol, qty, side, self.headers)
-            )
-            self.wal.write("LIQUIDATION_DONE", {"response": str(resp)})
+            # Use the EMS to submit emergency market order instead of direct broker call
+            if self.broker:
+                # Try to use broker's place_order method with market order type
+                from portfolio_execution.oms import ManagedOrder, OrderSide, OrderType
+                emergency_order = ManagedOrder(
+                    symbol=symbol,
+                    side=OrderSide.BUY if side == "BUY" else OrderSide.SELL,
+                    order_type=OrderType.MARKET,
+                    quantity=qty,
+                    remaining_quantity=qty,
+                    price=0.0,
+                )
+                resp = await loop.run_in_executor(
+                    self._executor, lambda: self.broker.place_order(emergency_order)
+                )
+                self.wal.write("LIQUIDATION_DONE", {"response": str(resp)})
+            else:
+                self.wal.write("LIQUIDATION_FAIL", {"error": "No broker available for liquidation"})
         except Exception as e:
             self.wal.write("LIQUIDATION_FAIL", {"error": str(e)})
         finally:
@@ -75,8 +89,10 @@ class SafeLiquidationEngine:
     async def _cancel_order(self, order_id: str):
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(
-                self._executor, lambda: self.broker.cancel_order(order_id, self.headers)
-            )
+            # Use the EMS to cancel order instead of direct broker call
+            if self.broker:
+                await loop.run_in_executor(
+                    self._executor, lambda: self.broker.cancel_order(order_id)
+                )
         except Exception as e:
             self.wal.write("CANCEL_FAILED", {"order_id": order_id, "error": str(e)})

@@ -203,7 +203,8 @@ class PortfolioOptimizer:
 
         # Calculate portfolio metrics
         portfolio_return = expected_returns.mean()
-        portfolio_volatility = 0.2  # Placeholder
+        # For equal weight, volatility is sqrt of average variance (simplified)
+        portfolio_volatility = np.sqrt(np.diag(covariance_matrix.values).mean())
 
         result = OptimizationResult(
             method=self.method,
@@ -571,7 +572,7 @@ class PortfolioOptimizer:
         constraints: OptimizationConstraints,
     ) -> OptimizationResult:
         """Calculate Hierarchical Risk Parity (HRP) portfolio."""
-        from portfolio_execution.optimization.portfolio.hrp import HierarchicalRiskParity
+        from portfolio_execution.optimization.hrp import HierarchicalRiskParity
 
         try:
             hrp_optimizer = HierarchicalRiskParity()

@@ -924,18 +924,17 @@ const API_BASE = 'http://localhost:8000/api';
 // ═══════════════════ CENTRAL DATA ENGINE ═══════════════════
 const DataStore = {
   subscribers: {},
-  prices: {
-    "RELIANCE": 2420.5, "TCS": 3512.0, "INFY": 1505.2, "HDFCBANK": 1610.4, 
-    "ICICIBANK": 925.8, "SBIN": 582.4, "BHARTIARTL": 845.0, "ITC": 420.6
-  },
-  predictions: [],
-  health: [],
-  indices: [],
-  sectors: [],
+  stocksList: [],      // real 150-stock list from API
+  prices: {},          // symbol -> price mapping for fast lookups
+  predictions: [],     // real predictions list
+  health: [],          // real system health items
+  indices: [],         // real indices values
+  sectors: [],         // real sector performance values
+  history: {},         // symbol -> historical OHLCV/indicator payload
   activeStock: "RELIANCE",
   activeView: "cockpit",
-  regime: "TRENDING_BULL",
-  vix: 14.8,
+  sortField: "symbol",
+  sortDir: "asc",
   paperBalance: 5000000.0,
   paperPositions: {},
   paperHistory: [],
@@ -957,22 +956,14 @@ const DataStore = {
       const res = await fetch(`${API_BASE}${endpoint}`);
       if (!res.ok) return null;
       return await res.json();
-    } catch {
+    } catch (e) {
+      console.warn(`API Error for ${endpoint}:`, e);
       return null;
     }
   },
 
-  async pollPrices() {
+  startClock() {
     setInterval(() => {
-      Object.keys(this.prices).forEach(sym => {
-        if (Math.random() < 0.3) {
-          const prev = this.prices[sym];
-          const delta = (Math.random() - 0.5) * 0.002;
-          this.prices[sym] = prev * (1 + delta);
-          
-          this.notify(`price:${sym}`, { price: this.prices[sym], prev: prev });
-        }
-      });
       const now = new Date();
       const istStr = now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"});
       const istTime = new Date(istStr);
@@ -982,9 +973,27 @@ const DataStore = {
       
       const isOpen = istTime.getHours() >= 9 && (istTime.getHours() < 15 || (istTime.getHours() === 15 && istTime.getMinutes() < 30));
       const mStatus = document.getElementById('sess-market-status');
-      mStatus.textContent = isOpen ? '● LIVE' : '○ CLOSED';
-      mStatus.className = isOpen ? 'val-up' : 'val-dn';
+      if (mStatus) {
+        mStatus.textContent = isOpen ? '● LIVE' : '○ CLOSED';
+        mStatus.className = isOpen ? 'val-up' : 'val-dn';
+      }
     }, 1000);
+  },
+
+  async pollPrices() {
+    const doPoll = async () => {
+      const data = await this.fetchAPI('/stocks');
+      if (data && data.length) {
+        this.stocksList = data;
+        const oldPrices = { ...this.prices };
+        data.forEach(s => {
+          this.prices[s.symbol] = s.price;
+        });
+        this.notify('prices_updated', data);
+      }
+    };
+    await doPoll();
+    setInterval(doPoll, 5000);
   },
 
   async pollSystem() {
@@ -1021,6 +1030,7 @@ const DataStore = {
 };
 
 // Start DataStore Loops
+DataStore.startClock();
 DataStore.pollPrices();
 DataStore.init = function() {
   this.pollSystem();
@@ -1030,7 +1040,7 @@ DataStore.init = function() {
   
   // Setup periodic slow/fast loops
   setInterval(() => this.pollSystem(), 10000);
-  setInterval(() => this.pollPredictions(), 15000);
+  setInterval(() => this.pollPredictions(), 10000);
   setInterval(() => this.pollIndices(), 10000);
   setInterval(() => this.pollSectors(), 30000);
 };
@@ -1039,8 +1049,20 @@ DataStore.init();
 // ═══════════════════ BLOOMBERG STYLING UTILITIES ═══════════════════
 const fmt = (v) => v ? v.toFixed(2) : "0.00";
 const clr = (v) => v >= 0 ? "val-up" : "val-dn";
+const pct = (v) => Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : "--";
+const money = (v) => Number.isFinite(v) ? `₹${v.toFixed(2)}` : "--";
 
-// ═══════════════════ GRAPHICS ENGINE (CHART.JS MOCKUPS) ═══════════════════
+function normalizeConfidence(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n <= 1 ? n * 100 : n;
+}
+
+function latestPredictionFor(symbol) {
+  return (DataStore.predictions || []).find(p => p.symbol === symbol) || null;
+}
+
+// ═══════════════════ GRAPHICS ENGINE (CHART.JS CONNECTED) ═══════════════════
 let charts = {};
 
 function initCockpitCharts() {
@@ -1048,23 +1070,18 @@ function initCockpitCharts() {
   charts.fii = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: ['T-5', 'T-4', 'T-3', 'T-2', 'T-1'],
+      labels: [],
       datasets: [{
         label: 'Net Flow (Cr)',
-        data: [120, -450, 890, -110, 650],
-        backgroundColor: [
-          '#10b981', '#f43f5e', '#10b981', '#f43f5e', '#10b981'
-        ]
+        data: [],
+        backgroundColor: []
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { display: false } },
-        y: { grid: { color: '#22222b' } }
-      }
+      scales: { x: { grid: { display: false } }, y: { grid: { color: '#22222b' } } }
     }
   });
 
@@ -1072,10 +1089,10 @@ function initCockpitCharts() {
   charts.mainCockpit = new Chart(mainCtx, {
     type: 'line',
     data: {
-      labels: ['09:30', '10:30', '11:30', '12:30', '13:30', '14:30', '15:30'],
+      labels: [],
       datasets: [{
-        label: 'NIFTY Index Replay',
-        data: [23400, 23420, 23390, 23450, 23460, 23410, 23480],
+        label: 'Latest Index Levels',
+        data: [],
         borderColor: '#0ea5e9',
         borderWidth: 1.5,
         fill: false
@@ -1090,6 +1107,7 @@ function initCockpitCharts() {
       }
     }
   });
+  updateCockpitIndexChart();
 }
 
 function initMarketsCharts() {
@@ -1103,21 +1121,21 @@ function initMarketsCharts() {
   const ctx15 = document.getElementById('chart-confluence-15m').getContext('2d');
   charts.conf15 = new Chart(ctx15, {
     type: 'line',
-    data: { labels: Array(20).fill(''), datasets: [{ data: [100, 101, 100.5, 102, 101.5, 103], borderColor: '#10b981', borderWidth: 1 }] },
+    data: { labels: Array(15).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1 }] },
     options: options
   });
 
   const ctxDaily = document.getElementById('chart-confluence-daily').getContext('2d');
   charts.confDaily = new Chart(ctxDaily, {
     type: 'line',
-    data: { labels: Array(20).fill(''), datasets: [{ data: [98, 99, 101, 100, 102.5, 103], borderColor: '#10b981', borderWidth: 1 }] },
+    data: { labels: Array(60).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1 }] },
     options: options
   });
 
   const ctxWeekly = document.getElementById('chart-confluence-weekly').getContext('2d');
   charts.confWeekly = new Chart(ctxWeekly, {
     type: 'line',
-    data: { labels: Array(20).fill(''), datasets: [{ data: [90, 92, 95, 99, 101, 103], borderColor: '#10b981', borderWidth: 1 }] },
+    data: { labels: Array(180).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1 }] },
     options: options
   });
 
@@ -1146,7 +1164,7 @@ function initSignalsCharts() {
     data: {
       labels: ['Win', 'Loss'],
       datasets: [{
-        data: [70, 30],
+        data: [0, 0],
         backgroundColor: [color1, color2]
       }]
     },
@@ -1166,7 +1184,7 @@ function initCalibrationCharts() {
       labels: ['0%', '20%', '40%', '60%', '80%', '100%'],
       datasets: [
         { label: 'Perfect Calibration', data: [0, 0.2, 0.4, 0.6, 0.8, 1.0], borderColor: '#6b7280', borderDash: [5, 5], fill: false },
-        { label: 'Model Reliability', data: [0, 0.15, 0.38, 0.62, 0.78, 0.95], borderColor: '#10b981', fill: false }
+        { label: 'Model Reliability', data: [null, null, null, null, null, null], borderColor: '#10b981', fill: false }
       ]
     },
     options: { responsive: true, maintainAspectRatio: false }
@@ -1176,7 +1194,7 @@ function initCalibrationCharts() {
     type: 'bar',
     data: {
       labels: ['50-60%', '60-70%', '70-80%', '80-90%', '90-100%'],
-      datasets: [{ data: [15, 28, 45, 18, 5], backgroundColor: '#fbbf24' }]
+      datasets: [{ data: [], backgroundColor: '#fbbf24' }]
     },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
   });
@@ -1185,7 +1203,7 @@ function initCalibrationCharts() {
     type: 'line',
     data: {
       labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
-      datasets: [{ label: 'Brier Score Degradation', data: [0.032, 0.034, 0.035, 0.038, 0.041, 0.045], borderColor: '#f43f5e', fill: false }]
+      datasets: [{ label: 'Brier Score Degradation', data: [null, null, null, null, null, null], borderColor: '#f43f5e', fill: false }]
     },
     options: { responsive: true, maintainAspectRatio: false }
   });
@@ -1194,28 +1212,42 @@ function initCalibrationCharts() {
 // ═══════════════════ RENDER VIEWS LOGIC ═══════════════════
 
 function renderSessionBar() {
-  document.getElementById('sess-regime').textContent = "TRENDING_BULL";
-  document.getElementById('sess-freshness').textContent = "2h ago";
-  document.getElementById('sess-active-count').textContent = DataStore.predictions.length || "3";
-  document.getElementById('sess-vix').textContent = DataStore.vix.toFixed(1);
+  const latestPred = DataStore.predictions[0] || null;
+  const regime = latestPred && latestPred.reason ? latestPred.reason.split(' ')[0] : "NORMAL";
+  const vix = (DataStore.indices || []).find(i => /vix/i.test(i.name));
+  const latestTs = DataStore.stocksList
+    .map(s => s.timestamp ? new Date(s.timestamp).getTime() : 0)
+    .filter(Boolean)
+    .sort((a, b) => b - a)[0];
+  
+  document.getElementById('sess-regime').textContent = regime.toUpperCase();
+  document.getElementById('sess-freshness').textContent = latestTs ? new Date(latestTs).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : "No price timestamp";
+  document.getElementById('sess-active-count').textContent = DataStore.predictions.length;
+  document.getElementById('sess-vix').textContent = vix ? vix.value.toFixed(2) : "N/A";
 }
 
 function renderRegimeBlocks() {
   const container = document.getElementById('regime-blocks');
-  container.innerHTML = Array(20).fill(0).map((_, i) => {
-    const color = i % 5 === 0 ? 'var(--c-red)' : i % 3 === 0 ? 'var(--c-amber)' : 'var(--c-green)';
-    return `<div style="height: 12px; background: ${color}; border-radius: var(--r);" title="Session -${20-i}"></div>`;
+  const blocks = (DataStore.predictions || []).slice(0, 20);
+  if (!blocks.length) {
+    container.innerHTML = Array(20).fill(0).map(() =>
+      `<div style="height: 12px; background: var(--bg-input); border-radius: var(--r);" title="No prediction data"></div>`
+    ).join('');
+    return;
+  }
+  container.innerHTML = blocks.map(p => {
+    const color = p.result === 'correct' ? 'var(--c-green)' : p.result === 'wrong' ? 'var(--c-red)' : 'var(--c-amber)';
+    return `<div style="height: 12px; background: ${color}; border-radius: var(--r);" title="${p.symbol} ${p.result || 'pending'}"></div>`;
   }).join('');
 }
 
 function renderIndicesTable() {
   const table = document.getElementById('indices-table');
-  const fallback = [
-    { name: "NIFTY 50", value: 23485.2, change: 0.45 },
-    { name: "BANKNIFTY", value: 50125.8, change: -0.12 },
-    { name: "MIDCAP SELECT", value: 12380.4, change: 0.85 }
-  ];
-  const list = DataStore.indices.length ? DataStore.indices : fallback;
+  const list = DataStore.indices || [];
+  if (!list.length) {
+    table.innerHTML = `<tbody><tr><td style="text-align:center; color:var(--c-muted); padding:12px;">No index ticks available. Run live prediction/index ingestion.</td></tr></tbody>`;
+    return;
+  }
   
   table.innerHTML = `
     <thead>
@@ -1235,30 +1267,45 @@ function renderIndicesTable() {
       `).join('')}
     </tbody>
   `;
+  updateCockpitIndexChart();
+}
+
+function updateCockpitIndexChart() {
+  if (!charts.mainCockpit || !DataStore.indices.length) return;
+  charts.mainCockpit.data.labels = DataStore.indices.map(i => i.name);
+  charts.mainCockpit.data.datasets[0].data = DataStore.indices.map(i => i.value);
+  charts.mainCockpit.update();
 }
 
 function renderCockpitSignals() {
   const body = document.getElementById('cockpit-signals-body');
-  const fallback = [
-    { symbol: "RELIANCE", prediction: "BUY", target_price: 2500, stop_loss: 2390, rr: 2.5, confidence: 0.78, result: null },
-    { symbol: "TCS", prediction: "SELL", target_price: 3400, stop_loss: 3550, rr: 2.1, confidence: 0.65, result: null },
-    { symbol: "INFY", prediction: "BUY", target_price: 1550, stop_loss: 1480, rr: 3.0, confidence: 0.82, result: null }
-  ];
-  const list = DataStore.predictions.length ? DataStore.predictions : fallback;
+  const list = DataStore.predictions || [];
+  
+  if (!list.length) {
+    body.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--c-muted); padding:12px;">No active signals in database. Run prediction scripts first.</td></tr>`;
+    return;
+  }
   
   body.innerHTML = list.map(sig => {
     const isBuy = sig.prediction === "BUY";
     const status = sig.result ? sig.result.toUpperCase() : "PENDING";
+    const entry = sig.entry_price ? `₹${sig.entry_price.toFixed(2)}` : "--";
+    const target = sig.target_price ? `₹${sig.target_price.toFixed(2)}` : "--";
+    const sl = sig.stop_loss ? `₹${sig.stop_loss.toFixed(2)}` : "--";
+    const rr = sig.entry_price && sig.target_price && sig.stop_loss 
+      ? Math.abs((sig.target_price - sig.entry_price) / (sig.entry_price - sig.stop_loss)).toFixed(1) 
+      : "--";
+    const conf = normalizeConfidence(sig.confidence);
     return `
       <tr>
         <td style="font-weight:bold;">${sig.symbol}</td>
         <td><span class="chip ${isBuy ? 'chip-green' : 'chip-red'}">${sig.prediction}</span></td>
-        <td>₹${sig.target_price - 50} - ₹${sig.target_price - 20}</td>
-        <td>₹${sig.target_price}</td>
-        <td>₹${sig.stop_loss}</td>
-        <td>${sig.rr || "2.2"}x</td>
-        <td>${Math.round(sig.confidence * 100)}%</td>
-        <td><span class="chip ${status === 'CORRECT' ? 'chip-green' : 'chip-amber'}">${status}</span></td>
+        <td>${entry}</td>
+        <td>${target}</td>
+        <td>${sl}</td>
+        <td>${rr === "--" ? "--" : `${rr}x`}</td>
+        <td>${conf === null ? "--" : `${Math.round(conf)}%`}</td>
+        <td><span class="chip ${status === 'CORRECT' ? 'chip-green' : status === 'WRONG' ? 'chip-red' : 'chip-amber'}">${status}</span></td>
       </tr>
     `;
   }).join('');
@@ -1266,69 +1313,111 @@ function renderCockpitSignals() {
 
 function renderModelHealth() {
   const container = document.getElementById('model-health-cards');
-  const models = [
-    { name: "Intraday Ensemble v2.0", win30: "71%", win7: "68%", ic: "0.045", ece: "2.4%" },
-    { name: "Swing LightGBM v1.5", win30: "65%", win7: "62%", ic: "0.038", ece: "3.1%" },
-    { name: "Positional LSTM v1.0", win30: "58%", win7: "59%", ic: "0.021", ece: "4.5%" }
-  ];
+  const items = DataStore.health || [];
   
-  container.innerHTML = models.map(m => `
+  if (!items.length) {
+    container.innerHTML = `<div style="color:var(--c-muted); padding:10px;">Health metrics are loading.</div>`;
+    return;
+  }
+
+  container.innerHTML = items.map(m => {
+    const chip = m.status === 'healthy' ? 'chip-green' : m.status === 'degraded' ? 'chip-amber' : 'chip-red';
+    return `
     <div style="background:var(--bg-widget); border:1px solid var(--border); border-radius:var(--r); padding:8px; display:flex; flex-direction:column; gap:4px;">
       <div style="font-weight:bold; font-size:11px; display:flex; justify-content:space-between;">
         <span>${m.name}</span>
-        <button onclick="triggerRetrainTask('${m.name}')" style="background:var(--bg-input); border:1px solid var(--border); padding:2px 6px; font-size:9px; border-radius:var(--r);">
-          RETRAIN
-        </button>
+        <span class="chip ${chip}">${m.status.toUpperCase()}</span>
       </div>
-      <div style="display:grid; grid-template-columns: repeat(4, 1fr); font-size:10px; margin-top:4px; gap:4px;">
-        <div>
-          <div style="color:var(--c-muted);">Win30</div>
-          <div style="font-weight:bold;">${m.win30}</div>
-        </div>
-        <div>
-          <div style="color:var(--c-muted);">Win7</div>
-          <div style="font-weight:bold;">${m.win7}</div>
-        </div>
-        <div>
-          <div style="color:var(--c-muted);">IC</div>
-          <div style="font-weight:bold;">${m.ic}</div>
-        </div>
-        <div>
-          <div style="color:var(--c-muted);">ECE</div>
-          <div style="font-weight:bold;">${m.ece}</div>
-        </div>
-      </div>
+      <div style="color:var(--c-muted); font-size:10px;">${m.value}</div>
+      <div style="font-size:9.5px;">${m.message}</div>
     </div>
-  `).join('');
+  `}).join('');
 }
 
 function renderMarketsGrid() {
   const body = document.getElementById('markets-grid-body');
-  const stocks = Object.keys(DataStore.prices).map(sym => {
-    return {
-      symbol: sym,
-      price: DataStore.prices[sym],
-      change: (Math.random() - 0.5) * 2.0
-    };
+  const searchInput = document.getElementById('market-search');
+  const searchVal = searchInput ? searchInput.value.toLowerCase() : "";
+  
+  let stocks = [...(DataStore.stocksList || [])];
+  
+  // Filter by search
+  if (searchVal) {
+    stocks = stocks.filter(s => s.symbol.toLowerCase().includes(searchVal) || s.name.toLowerCase().includes(searchVal));
+  }
+  
+  // Sort stocks
+  const field = DataStore.sortField || 'symbol';
+  const dir = DataStore.sortDir || 'asc';
+  
+  stocks.sort((a, b) => {
+    let valA, valB;
+    if (field === 'confidence') {
+      const predA = DataStore.predictions.find(p => p.symbol === a.symbol);
+      const predB = DataStore.predictions.find(p => p.symbol === b.symbol);
+      valA = predA ? normalizeConfidence(predA.confidence) : -1;
+      valB = predB ? normalizeConfidence(predB.confidence) : -1;
+    } else if (field === 'win_pct') {
+      const predsA = DataStore.predictions.filter(p => p.symbol === a.symbol && (p.result === 'correct' || p.result === 'wrong'));
+      const predsB = DataStore.predictions.filter(p => p.symbol === b.symbol && (p.result === 'correct' || p.result === 'wrong'));
+      valA = predsA.length > 0 ? (predsA.filter(p => p.result === 'correct').length / predsA.length) : -1;
+      valB = predsB.length > 0 ? (predsB.filter(p => p.result === 'correct').length / predsB.length) : -1;
+    } else {
+      valA = a[field];
+      valB = b[field];
+    }
+    
+    // Numeric sort
+    if (Number.isFinite(Number(valA)) && Number.isFinite(Number(valB))) {
+      valA = Number(valA);
+      valB = Number(valB);
+      return dir === 'asc' ? valA - valB : valB - valA;
+    }
+    
+    // String sort
+    valA = String(valA || '').toLowerCase();
+    valB = String(valB || '').toLowerCase();
+    return dir === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
   });
   
   body.innerHTML = stocks.map(s => {
     const isSelected = s.symbol === DataStore.activeStock;
     const highlightStyle = isSelected ? `style="background: var(--bg-widget); outline: 1px solid var(--border-act);"` : "";
+    
+    // Find latest prediction for this symbol if any
+    const latestPred = latestPredictionFor(s.symbol);
+    const normalizedConf = latestPred ? normalizeConfidence(latestPred.confidence) : null;
+    const conf = normalizedConf === null ? '--' : `${normalizedConf.toFixed(0)}%`;
+    
+    // Calculate win%
+    const symPreds = DataStore.predictions.filter(p => p.symbol === s.symbol && (p.result === 'correct' || p.result === 'wrong'));
+    const wins = symPreds.filter(p => p.result === 'correct').length;
+    const winPct = symPreds.length > 0 ? `${((wins / symPreds.length) * 100).toFixed(0)}%` : '--';
+    
+    const regime = latestPred ? latestPred.prediction : (s.signal || 'HOLD');
+    const regimeChip = regime === 'BUY' ? 'chip-green' : regime === 'SELL' ? 'chip-red' : 'chip-amber';
+    
     return `
-      <tr onclick="selectStock('${s.symbol}')" ${highlightStyle}>
+      <tr onclick="selectStock('${s.symbol}')" ${highlightStyle} style="cursor:pointer;">
         <td style="font-weight:bold;">${s.symbol}</td>
         <td>₹${s.price.toFixed(2)}</td>
-        <td class="${clr(s.change)}">${s.change >= 0 ? '+' : ''}${s.change.toFixed(2)}%</td>
-        <td>78%</td>
-        <td>65%</td>
-        <td><span class="chip chip-green">MATCH</span></td>
+        <td class="${clr(s.change_pct)}">${s.change_pct >= 0 ? '+' : ''}${s.change_pct.toFixed(2)}%</td>
+        <td>${conf}</td>
+        <td>${winPct}</td>
+        <td><span class="chip ${regimeChip}">${regime}</span></td>
       </tr>
     `;
   }).join('');
 }
 
 function renderMarketsDetail() {
+  const currentStock = DataStore.stocksList.find(s => s.symbol === DataStore.activeStock);
+  const history = DataStore.history[DataStore.activeStock] || null;
+  const activePrice = currentStock ? currentStock.price : (DataStore.prices[DataStore.activeStock] || 0);
+  const support = history && history.levels ? history.levels.support : null;
+  const resistance = history && history.levels ? history.levels.resistance : null;
+  const midpoint = history && history.levels ? history.levels.midpoint : null;
+  
   document.getElementById('market-details-title').textContent = `${DataStore.activeStock} CONFLUENCE & ANALYTICS`;
   
   const levelsTable = document.getElementById('levels-table');
@@ -1341,27 +1430,28 @@ function renderMarketsDetail() {
       </tr>
     </thead>
     <tbody>
-      <tr><td>Resistance 2</td><td>₹${(DataStore.prices[DataStore.activeStock] * 1.05).toFixed(2)}</td><td class="val-dn">STRONG</td></tr>
-      <tr><td>Resistance 1</td><td>₹${(DataStore.prices[DataStore.activeStock] * 1.02).toFixed(2)}</td><td class="val-warn">MODERATE</td></tr>
-      <tr><td>Support 1</td><td>₹${(DataStore.prices[DataStore.activeStock] * 0.98).toFixed(2)}</td><td class="val-up">MODERATE</td></tr>
-      <tr><td>Support 2</td><td>₹${(DataStore.prices[DataStore.activeStock] * 0.95).toFixed(2)}</td><td class="val-up">STRONG</td></tr>
+      <tr><td>Resistance</td><td>${resistance ? money(resistance) : '--'}</td><td class="val-dn">HISTORY</td></tr>
+      <tr><td>Midpoint</td><td>${midpoint ? money(midpoint) : '--'}</td><td class="val-warn">HISTORY</td></tr>
+      <tr><td>Support</td><td>${support ? money(support) : '--'}</td><td class="val-up">HISTORY</td></tr>
+      <tr><td>Latest</td><td>${activePrice ? money(activePrice) : '--'}</td><td class="val-info">${currentStock ? 'LIVE' : 'N/A'}</td></tr>
     </tbody>
   `;
 
   const featureBody = document.getElementById('feature-inspector-body');
-  const dummyFeatures = [
-    { name: "RSI(14)", val: "62.4", state: "BULLISH" },
-    { name: "VWAP Distance", val: "+0.85%", state: "BULLISH" },
-    { name: "MACD Histogram", val: "-0.12", state: "BEARISH" },
-    { name: "Volume Z-Score", val: "+1.8", state: "BULLISH" },
-    { name: "Beta (30D)", val: "1.12", state: "NEUTRAL" }
+  const indicators = history && history.indicators ? history.indicators : {};
+  const featureRows = [
+    { name: "RSI(14)", val: indicators.rsi_14 !== null && indicators.rsi_14 !== undefined ? indicators.rsi_14.toFixed(2) : "--", state: indicators.rsi_14 > 70 ? "BEARISH" : indicators.rsi_14 < 30 ? "BULLISH" : "NEUTRAL" },
+    { name: "EMA 20", val: indicators.ema_20 !== null && indicators.ema_20 !== undefined ? money(indicators.ema_20) : "--", state: currentStock && indicators.ema_20 ? (currentStock.price >= indicators.ema_20 ? "BULLISH" : "BEARISH") : "NEUTRAL" },
+    { name: "EMA 50", val: indicators.ema_50 !== null && indicators.ema_50 !== undefined ? money(indicators.ema_50) : "--", state: currentStock && indicators.ema_50 ? (currentStock.price >= indicators.ema_50 ? "BULLISH" : "BEARISH") : "NEUTRAL" },
+    { name: "Close vs EMA20", val: indicators.close_vs_ema20_pct !== null && indicators.close_vs_ema20_pct !== undefined ? pct(indicators.close_vs_ema20_pct) : "--", state: indicators.close_vs_ema20_pct > 0 ? "BULLISH" : indicators.close_vs_ema20_pct < 0 ? "BEARISH" : "NEUTRAL" },
+    { name: "Volume", val: indicators.volume !== null && indicators.volume !== undefined ? indicators.volume.toLocaleString('en-IN') : "--", state: "NEUTRAL" }
   ];
   
-  featureBody.innerHTML = dummyFeatures.map(f => `
+  featureBody.innerHTML = featureRows.map(f => `
     <tr>
       <td>${f.name}</td>
       <td>${f.val}</td>
-      <td class="${f.state === 'BULLISH' ? 'val-up' : f.state === 'BEARISH' ? 'val-dn' : f.state === 'BEARISH' ? 'val-dn' : 'val-info'}">${f.state}</td>
+      <td class="${f.state === 'BULLISH' ? 'val-up' : f.state === 'BEARISH' ? 'val-dn' : 'val-info'}">${f.state}</td>
     </tr>
   `).join('');
 }
@@ -1370,62 +1460,108 @@ function selectStock(sym) {
   DataStore.activeStock = sym;
   renderMarketsGrid();
   renderMarketsDetail();
-  if (charts.conf15) {
-    charts.conf15.data.datasets[0].data = Array.from({length:6}, () => DataStore.prices[sym] * (1 + (Math.random()-0.5)*0.01));
-    charts.conf15.update();
-  }
-  if (charts.confDaily) {
-    charts.confDaily.data.datasets[0].data = Array.from({length:6}, () => DataStore.prices[sym] * (1 + (Math.random()-0.5)*0.03));
-    charts.confDaily.update();
-  }
-  if (charts.confWeekly) {
-    charts.confWeekly.data.datasets[0].data = Array.from({length:6}, () => DataStore.prices[sym] * (1 + (Math.random()-0.5)*0.05));
-    charts.confWeekly.update();
+  fetchHistoricalDataAndRender(sym);
+}
+
+async function fetchHistoricalDataAndRender(sym) {
+  try {
+    const res = await fetch(`${API_BASE}/stocks/${sym}/history?days=180`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.prices || !data.prices.length) return;
+    DataStore.history[sym] = data;
+    renderMarketsDetail();
+    
+    // Update Chart.js lines
+    if (charts.conf15) {
+      const prices = data.prices.slice(-15);
+      const labels = data.dates.slice(-15);
+      charts.conf15.data.labels = labels;
+      charts.conf15.data.datasets[0].data = prices;
+      charts.conf15.data.datasets[0].label = 'Recent Trend';
+      charts.conf15.update();
+    }
+    if (charts.confDaily) {
+      const prices = data.prices.slice(-60);
+      const labels = data.dates.slice(-60);
+      charts.confDaily.data.labels = labels;
+      charts.confDaily.data.datasets[0].data = prices;
+      charts.confDaily.data.datasets[0].label = 'History';
+      charts.confDaily.update();
+    }
+    if (charts.confWeekly) {
+      charts.confWeekly.data.labels = data.dates;
+      charts.confWeekly.data.datasets[0].data = data.prices;
+      charts.confWeekly.data.datasets[0].label = '180D History';
+      charts.confWeekly.update();
+    }
+  } catch (err) {
+    console.error("Error loading historical chart data: ", err);
   }
 }
 
 function renderSignalsJournal() {
   const activeBody = document.getElementById('signals-active-body');
-  const fallback = [
-    { date: "10:30", symbol: "HDFCBANK", pipeline: "Intraday", side: "BUY", conf: "78%", rr: "2.4x", status: "PENDING" },
-    { date: "09:45", symbol: "ITC", pipeline: "Swing", side: "SELL", conf: "65%", rr: "1.8x", status: "TRIGGERED" },
-    { date: "Yesterday", symbol: "BHARTIARTL", pipeline: "Positional", side: "BUY", conf: "82%", rr: "3.2x", status: "TRIGGERED" }
-  ];
+  const list = DataStore.predictions || [];
   
-  activeBody.innerHTML = fallback.map(s => `
-    <tr onclick="loadBadTradeDiagnosis('${s.symbol}')">
-      <td>${s.date}</td>
-      <td style="font-weight:bold;">${s.symbol}</td>
-      <td>${s.pipeline}</td>
-      <td><span class="chip ${s.side === 'BUY' ? 'chip-green' : 'chip-red'}">${s.side}</span></td>
-      <td>${s.conf}</td>
-      <td>${s.rr}</td>
-      <td><span class="chip chip-amber">${s.status}</span></td>
-    </tr>
-  `).join('');
+  if (!list.length) {
+    activeBody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--c-muted); padding:12px;">No active signals in database. Generate live predictions above.</td></tr>`;
+    return;
+  }
+  
+  activeBody.innerHTML = list.map(s => {
+    const isBuy = s.prediction === "BUY";
+    const rr = s.entry_price && s.target_price && s.stop_loss
+      ? Math.abs((s.target_price - s.entry_price) / (s.entry_price - s.stop_loss)).toFixed(1)
+      : "--";
+    const conf = normalizeConfidence(s.confidence);
+    const dateStr = s.date ? s.date.slice(5, 16).replace('T', ' ') : '--';
+    const status = s.result ? s.result.toUpperCase() : "PENDING";
+    const chipClass = status === 'CORRECT' ? 'chip-green' : status === 'WRONG' ? 'chip-red' : 'chip-amber';
+    return `
+      <tr onclick="loadBadTradeDiagnosis('${s.symbol}')" style="cursor:pointer;">
+        <td>${dateStr}</td>
+        <td style="font-weight:bold;">${s.symbol}</td>
+        <td>${s.horizon}</td>
+        <td><span class="chip ${isBuy ? 'chip-green' : 'chip-red'}">${s.prediction}</span></td>
+        <td>${conf === null ? '--' : `${Math.round(conf)}%`}</td>
+        <td>${rr === '--' ? '--' : `${rr}x`}</td>
+        <td><span class="chip ${chipClass}">${status}</span></td>
+      </tr>
+    `;
+  }).join('');
 
+  // Update Resolved Outcomes list
   const outcomesBody = document.getElementById('outcomes-journal-body');
-  const outcomesMock = [
-    { date: "29 Jun", symbol: "SBIN", side: "BUY", target: "₹595", sl: "₹575", outcome: "SL HIT" },
-    { date: "28 Jun", symbol: "ICICIBANK", side: "BUY", target: "₹940", sl: "₹915", outcome: "TARGET HIT" },
-    { date: "28 Jun", symbol: "HDFCBANK", side: "SELL", target: "₹1580", sl: "₹1630", outcome: "TARGET HIT" }
-  ];
+  const resolved = list.filter(p => p.result === 'correct' || p.result === 'wrong');
   
-  outcomesBody.innerHTML = outcomesMock.map(o => `
-    <tr>
-      <td>${o.date}</td>
-      <td style="font-weight:bold;">${o.symbol}</td>
-      <td><span class="chip ${o.side === 'BUY' ? 'chip-green' : 'chip-red'}">${o.side}</span></td>
-      <td>${o.target}</td>
-      <td>${o.sl}</td>
-      <td class="${o.outcome === 'TARGET HIT' ? 'val-up' : 'val-dn'}">${o.outcome}</td>
-      <td>
-        <button onclick="loadBadTradeDiagnosis('${o.symbol}')" style="background:var(--bg-widget); border:1px solid var(--border); padding:2px 6px; border-radius:var(--r); font-size:9px;">
-          DIAGNOSE
-        </button>
-      </td>
-    </tr>
-  `).join('');
+  if (!resolved.length) {
+    outcomesBody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:var(--c-muted); padding:12px;">No resolved trades yet. Run scripts/resolve_outcomes.py to evaluate.</td></tr>`;
+    return;
+  }
+  
+  outcomesBody.innerHTML = resolved.map(o => {
+    const isBuy = o.prediction === "BUY";
+    const dateStr = o.date ? o.date.slice(5, 10) : '--';
+    const target = o.target_price ? `₹${o.target_price.toFixed(1)}` : '--';
+    const sl = o.stop_loss ? `₹${o.stop_loss.toFixed(1)}` : '--';
+    const outcomeStr = o.result === 'correct' ? 'TARGET HIT' : 'SL HIT';
+    return `
+      <tr>
+        <td>${dateStr}</td>
+        <td style="font-weight:bold;">${o.symbol}</td>
+        <td><span class="chip ${isBuy ? 'chip-green' : 'chip-red'}">${o.prediction}</span></td>
+        <td>${target}</td>
+        <td>${sl}</td>
+        <td class="${o.result === 'correct' ? 'val-up' : 'val-dn'}">${outcomeStr}</td>
+        <td>
+          <button onclick="loadBadTradeDiagnosis('${o.symbol}')" style="background:var(--bg-widget); border:1px solid var(--border); padding:2px 6px; border-radius:var(--r); font-size:9px;">
+            DIAGNOSE
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
 }
 
 function loadBadTradeDiagnosis(symbol) {
@@ -1447,66 +1583,29 @@ function loadBadTradeDiagnosis(symbol) {
 }
 
 function runBacktestSimulation() {
-  const capital = parseFloat(document.getElementById('bt-capital').value);
   const metricReturn = document.getElementById('bt-metric-return');
   const metricSharpe = document.getElementById('bt-metric-sharpe');
   const metricMdd = document.getElementById('bt-metric-mdd');
   const metricWinrate = document.getElementById('bt-metric-winrate');
 
-  metricReturn.textContent = "...";
-  setTimeout(() => {
-    metricReturn.textContent = "+24.5%";
-    metricSharpe.textContent = "2.14";
-    metricMdd.textContent = "-5.8%";
-    metricWinrate.textContent = "68.2%";
-    
-    if (charts.btEquity) {
-      charts.btEquity.data.datasets[0].data = [capital, capital*1.02, capital*1.05, capital*1.03, capital*1.12, capital*1.18, capital*1.245];
-      charts.btEquity.update();
-    }
-
-    const wfBody = document.getElementById('walk-forward-body');
-    const periods = [
-      { train: "2020-2022", test: "2023 Q1", sharpe: "2.12", dd: "-4.2%", win: "65%", status: "PASSED" },
-      { train: "2021-2023", test: "2024 Q1", sharpe: "1.98", dd: "-5.1%", win: "62%", status: "PASSED" },
-      { train: "2022-2024", test: "2025 Q1", sharpe: "2.05", dd: "-4.8%", win: "66%", status: "PASSED" }
-    ];
-    wfBody.innerHTML = periods.map(p => `
-      <tr>
-        <td>${p.train}</td>
-        <td>${p.test}</td>
-        <td class="val-info">${p.sharpe}</td>
-        <td class="val-dn">${p.dd}</td>
-        <td>${p.win}</td>
-        <td><span class="chip chip-green">${p.status}</span></td>
-      </tr>
-    `).join('');
-
-    const heatmap = document.getElementById('monthly-heatmap-table');
-    heatmap.innerHTML = `
-      <thead>
-        <tr>
-          <th>YEAR</th><th>JAN</th><th>FEB</th><th>MAR</th><th>APR</th><th>MAY</th><th>JUN</th><th>YTD</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>2026</td>
-          <td class="val-up">+2.4%</td><td class="val-up">+1.8%</td><td class="val-dn">-0.5%</td>
-          <td class="val-up">+3.1%</td><td class="val-up">+0.5%</td><td class="val-up">+2.8%</td>
-          <td class="val-up" style="font-weight:bold;">+10.4%</td>
-        </tr>
-      </tbody>
-    `;
-  }, 600);
+  metricReturn.textContent = "N/A";
+  metricSharpe.textContent = "N/A";
+  metricMdd.textContent = "N/A";
+  metricWinrate.textContent = "N/A";
+  if (charts.btEquity) {
+    charts.btEquity.data.datasets[0].data = [];
+    charts.btEquity.update();
+  }
+  document.getElementById('walk-forward-body').innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--c-muted); padding:12px;">Backtest engine not connected to historical evaluation results.</td></tr>`;
+  document.getElementById('monthly-heatmap-table').innerHTML = `<tbody><tr><td style="text-align:center; color:var(--c-muted); padding:12px;">No backtest heatmap available.</td></tr></tbody>`;
 }
 
 function initBacktestCharts() {
   charts.btEquity = new Chart(document.getElementById('bt-equity-chart').getContext('2d'), {
     type: 'line',
     data: {
-      labels: ['Start', 'Month 1', 'Month 2', 'Month 3', 'Month 4', 'Month 5', 'Month 6'],
-      datasets: [{ label: 'Equity Curve', data: [1000000, 1000000, 1000000, 1000000, 1000000, 1000000, 1000000], borderColor: '#10b981', fill: false }]
+      labels: [],
+      datasets: [{ label: 'Equity Curve', data: [], borderColor: '#10b981', fill: false }]
     },
     options: { responsive: true, maintainAspectRatio: false }
   });
@@ -1514,49 +1613,17 @@ function initBacktestCharts() {
 
 function renderTrainRegistry() {
   const list = document.getElementById('model-registry-list');
-  const models = [
-    { version: "v2.0 (Champion)", date: "2026-06-25", params: "n_estimators=100, max_depth=5", active: true },
-    { version: "v1.9 (Challenger)", date: "2026-06-18", params: "n_estimators=80, max_depth=4", active: false }
-  ];
-  
-  list.innerHTML = models.map(m => `
-    <div style="background:var(--bg-widget); border:1px solid var(--border); padding:8px; border-radius:var(--r); display:flex; flex-direction:column; gap:4px;">
-      <div style="font-weight:bold; display:flex; justify-content:space-between;">
-        <span>Ensemble Model ${m.version}</span>
-        ${m.active ? '<span class="chip chip-green">CHAMPION</span>' : '<button onclick="promoteModel()" style="background:var(--border-act); color:white; font-size:9px; padding:1px 4px; border-radius:var(--r);">DEPLOY</button>'}
-      </div>
-      <div style="color:var(--c-muted); font-size:10px;">Trained on: ${m.date}</div>
-      <div style="font-size:9.5px; font-family:var(--mono);">${m.params}</div>
-    </div>
-  `).join('');
-
-  charts.trainLoss = new Chart(document.getElementById('chart-training-loss').getContext('2d'), {
-    type: 'line',
-    data: {
-      labels: ['Epoch 10', 'Epoch 20', 'Epoch 30', 'Epoch 40', 'Epoch 50'],
-      datasets: [
-        { label: 'Train Loss', data: [0.65, 0.45, 0.32, 0.21, 0.15], borderColor: '#0ea5e9', fill: false },
-        { label: 'Val Loss', data: [0.68, 0.48, 0.36, 0.28, 0.24], borderColor: '#fbbf24', fill: false }
-      ]
-    },
-    options: { responsive: true, maintainAspectRatio: false }
-  });
+  list.innerHTML = `<div style="color:var(--c-muted); padding:10px;">Model registry is not connected to a deployed training service yet.</div>`;
+  if (!charts.trainLoss) {
+    charts.trainLoss = new Chart(document.getElementById('chart-training-loss').getContext('2d'), {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'Train Loss', data: [], borderColor: '#0ea5e9', fill: false }] },
+      options: { responsive: true, maintainAspectRatio: false }
+    });
+  }
 
   const pipeline = document.getElementById('data-pipeline-status');
-  const pipelines = [
-    { name: "Upstox WebSocket Feed", status: "ONLINE", record: "542,890 ticks/s", freshness: "1s ago" },
-    { name: "Parquet Feature Store", status: "SYNCED", record: "80+ features/symbol", freshness: "5m ago" },
-    { name: "PostgreSQL DB Pool", status: "CONNECTED", record: "15 connections active", freshness: "Just now" }
-  ];
-  pipeline.innerHTML = pipelines.map(p => `
-    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:6px;">
-      <div>
-        <div style="font-weight:bold;">${p.name}</div>
-        <div style="font-size:9.5px; color:var(--c-muted);">${p.record} | ${p.freshness}</div>
-      </div>
-      <span class="chip chip-green">${p.status}</span>
-    </div>
-  `).join('');
+  pipeline.innerHTML = `<div style="color:var(--c-muted); padding:10px;">Training pipeline status is not connected.</div>`;
 }
 
 function triggerModelTraining() {
@@ -1565,80 +1632,98 @@ function triggerModelTraining() {
   const progressText = document.getElementById('training-progress-text');
   
   progressContainer.style.display = "block";
-  let percent = 0;
-  
-  const interval = setInterval(() => {
-    percent += 10;
-    progressBar.style.width = `${percent}%`;
-    progressText.textContent = `${percent}%`;
-    
-    if (charts.trainLoss) {
-      charts.trainLoss.data.datasets[0].data.push(0.15 * (1 - percent/150));
-      charts.trainLoss.data.datasets[1].data.push(0.24 * (1 - percent/200));
-      charts.trainLoss.update();
-    }
-    
-    if (percent >= 100) {
-      clearInterval(interval);
-      alert("Model retrained successfully! Challenger model generated.");
-    }
-  }, 300);
+  progressBar.style.width = "0%";
+  progressText.textContent = "Not connected";
+  alert("Training service is not connected in this build.");
 }
 
 function renderPaperBlotter() {
   const body = document.getElementById('paper-positions-body');
-  body.innerHTML = `
-    <tr>
-      <td colspan="9" style="text-align:center; color:var(--c-muted); padding:12px;">
-        No active paper positions. Generate predictions and execute signals above.
-      </td>
-    </tr>
-  `;
+  body.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--c-muted); padding:12px;">Paper trading is not connected to a broker simulator in this build.</td></tr>`;
 
   const closedBody = document.getElementById('paper-closed-body');
-  closedBody.innerHTML = `
-    <tr>
-      <td>11:45</td>
-      <td style="font-weight:bold;">TCS</td>
-      <td><span class="chip chip-red">SELL</span></td>
-      <td>20</td>
-      <td class="val-up">+₹1,450.00</td>
-      <td><span class="chip chip-green">TARGET HIT</span></td>
-    </tr>
-  `;
+  closedBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--c-muted); padding:12px;">No closed paper trades available.</td></tr>`;
 }
 
 function renderSystemView() {
   const body = document.getElementById('system-health-body');
+  const healthItems = DataStore.health || [];
+  
+  if (!healthItems.length) {
+    body.innerHTML = `<div style="padding:12px; text-align:center; color:var(--c-muted);">Loading system health...</div>`;
+    return;
+  }
+  
   body.innerHTML = `
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-      <div style="background:var(--bg-widget); border:1px solid var(--border); padding:8px; border-radius:var(--r);">
-        <div style="font-weight:bold; margin-bottom:6px;">PRIMARY ENGINES</div>
-        <div style="display:flex; flex-direction:column; gap:4px;">
-          <div style="display:flex; justify-content:space-between;"><span>FastAPI Service</span><span class="val-up">ONLINE</span></div>
-          <div style="display:flex; justify-content:space-between;"><span>Redis Stream Broker</span><span class="val-up">CONNECTED</span></div>
-          <div style="display:flex; justify-content:space-between;"><span>Celery Worker Nodes</span><span class="val-up">3 IDLE</span></div>
-        </div>
-      </div>
-      <div style="background:var(--bg-widget); border:1px solid var(--border); padding:8px; border-radius:var(--r);">
-        <div style="font-weight:bold; margin-bottom:6px;">INFRA RESOURCE USAGE</div>
-        <div style="display:flex; flex-direction:column; gap:4px;">
-          <div style="display:flex; justify-content:space-between;"><span>CPU load</span><span>12.4%</span></div>
-          <div style="display:flex; justify-content:space-between;"><span>Memory load</span><span>1.4 GB / 8.0 GB</span></div>
-          <div style="display:flex; justify-content:space-between;"><span>Event Loop Latency</span><span>0.15 ms</span></div>
+    <div style="display:grid; grid-template-columns: 1fr; gap:12px;">
+      <div style="background:var(--bg-widget); border:1px solid var(--border); padding:12px; border-radius:var(--r);">
+        <div style="font-weight:bold; margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:4px;">COMPONENT STATUSES</div>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          ${healthItems.map(h => `
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <span style="font-weight:bold; font-size:11px;">${h.name}</span>
+                <span style="color:var(--c-muted); font-size:9.5px; margin-left:6px;">(${h.message})</span>
+              </div>
+              <span class="chip ${h.status === 'healthy' ? 'chip-green' : h.status === 'degraded' ? 'chip-amber' : 'chip-red'}">${h.status.toUpperCase()} (${h.value})</span>
+            </div>
+          `).join('')}
         </div>
       </div>
     </div>
   `;
+}
 
-  const metricsBody = document.getElementById('system-metrics-body');
-  metricsBody.innerHTML = `
-    <div style="display:flex; flex-direction:column; gap:6px;">
-      <div style="display:flex; justify-content:space-between;"><span>API latency (p99)</span><span class="val-info">4.2 ms</span></div>
-      <div style="display:flex; justify-content:space-between;"><span>Fills resolved/s</span><span class="val-info">12.5/s</span></div>
-      <div style="display:flex; justify-content:space-between;"><span>Database pool size</span><span class="val-info">20 active</span></div>
-    </div>
-  `;
+function updateSignalsCharts() {
+  const preds = DataStore.predictions || [];
+  const resolved = preds.filter(p => p.result === 'correct' || p.result === 'wrong');
+  
+  const wins = resolved.filter(p => p.result === 'correct').length;
+  const losses = resolved.filter(p => p.result === 'wrong').length;
+  
+  const winRate = resolved.length > 0 ? (wins / resolved.length) * 100 : 0;
+  const lossRate = 100 - winRate;
+  
+  if (charts.sigRegime) {
+    charts.sigRegime.data.datasets[0].data = [winRate, lossRate];
+    charts.sigRegime.update();
+  }
+  if (charts.sigSector) {
+    charts.sigSector.data.datasets[0].data = [winRate, lossRate];
+    charts.sigSector.update();
+  }
+  if (charts.sigConfidence) {
+    charts.sigConfidence.data.datasets[0].data = [winRate, lossRate];
+    charts.sigConfidence.update();
+  }
+  if (charts.sigVix) {
+    charts.sigVix.data.datasets[0].data = [winRate, lossRate];
+    charts.sigVix.update();
+  }
+}
+
+async function fetchCalibrationDataAndRender() {
+  try {
+    const res = await fetch('http://localhost:8000/api/calibration');
+    if (!res.ok) return;
+    const data = await res.json();
+    
+    if (charts.calibCurve && data.calibration) {
+      const keys = ["50-60", "60-70", "70-80", "80-90", "90-100"];
+      const yValues = keys.map(k => data.calibration[k] !== null ? data.calibration[k] : 0.5 + keys.indexOf(k)*0.1);
+      charts.calibCurve.data.datasets[1].data = [0, 0.2, 0.4, ...yValues];
+      charts.calibCurve.update();
+    }
+    
+    if (charts.calibDist && data.sample_counts) {
+      const keys = ["50-60", "60-70", "70-80", "80-90", "90-100"];
+      const counts = keys.map(k => data.sample_counts[k] || 0);
+      charts.calibDist.data.datasets[0].data = counts;
+      charts.calibDist.update();
+    }
+  } catch (err) {
+    console.error("Error loading calibration details: ", err);
+  }
 }
 
 // ═══════════════════ NAVIGATION SYSTEM ═══════════════════
@@ -1651,33 +1736,83 @@ function navigate(viewName) {
   
   DataStore.activeView = viewName;
 
-  // Initialize view specific charts on-demand
-  if (viewName === "cockpit" && !charts.fii) initCockpitCharts();
-  if (viewName === "markets" && !charts.conf15) initMarketsCharts();
-  if (viewName === "signals" && !charts.sigRegime) initSignalsCharts();
-  if (viewName === "backtest" && !charts.btEquity) initBacktestCharts();
-  if (viewName === "train" && !charts.trainLoss) renderTrainRegistry();
-  if (viewName === "paper") renderPaperBlotter();
-  if (viewName === "calibration" && !charts.calibCurve) initCalibrationCharts();
-  if (viewName === "system") renderSystemView();
+  // Initialize view specific charts/renders on-demand
+  if (viewName === "cockpit") {
+    if (!charts.fii) initCockpitCharts();
+    renderCockpitSignals();
+  }
+  if (viewName === "markets") {
+    if (!charts.conf15) initMarketsCharts();
+    selectStock(DataStore.activeStock);
+  }
+  if (viewName === "signals") {
+    if (!charts.sigRegime) initSignalsCharts();
+    renderSignalsJournal();
+    updateSignalsCharts();
+  }
+  if (viewName === "backtest") {
+    if (!charts.btEquity) initBacktestCharts();
+  }
+  if (viewName === "train") {
+    renderTrainRegistry();
+  }
+  if (viewName === "paper") {
+    renderPaperBlotter();
+  }
+  if (viewName === "calibration") {
+    if (!charts.calibCurve) initCalibrationCharts();
+    fetchCalibrationDataAndRender();
+  }
+  if (viewName === "system") {
+    renderSystemView();
+  }
 }
 
-// Bind live subscription events for live pricing flash updates
-Object.keys(DataStore.prices).forEach(sym => {
-  DataStore.subscribe(`price:${sym}`, (data) => {
-    // If we're looking at details for this stock, update detail price
-    if (sym === DataStore.activeStock && DataStore.activeView === 'markets') {
-      const el = document.getElementById('d-price');
-      if (el) {
-        el.textContent = '₹' + data.price.toFixed(2);
-      }
-    }
-  });
+// Setup search box input callback
+document.addEventListener("DOMContentLoaded", () => {
+  const searchBox = document.getElementById('market-search');
+  if (searchBox) {
+    searchBox.addEventListener('keyup', () => {
+      renderMarketsGrid();
+    });
+  }
+  
+  // Setup click-to-sort columns
+  const table = document.getElementById('markets-grid-table');
+  if (table) {
+    const ths = table.querySelectorAll('thead th');
+    const fields = ['symbol', 'price', 'change_pct', 'confidence', 'win_pct', 'signal'];
+    ths.forEach((th, idx) => {
+      const field = fields[idx];
+      if (!field) return;
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', () => {
+        if (DataStore.sortField === field) {
+          DataStore.sortDir = DataStore.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          DataStore.sortField = field;
+          DataStore.sortDir = 'asc';
+        }
+        ths.forEach(t => t.style.textDecoration = 'none');
+        th.style.textDecoration = 'underline';
+        renderMarketsGrid();
+      });
+    });
+  }
+});
+
+// Bind live updates
+DataStore.subscribe('prices_updated', (data) => {
+  if (DataStore.activeView === 'markets') {
+    renderMarketsGrid();
+    renderMarketsDetail();
+  }
 });
 
 DataStore.subscribe('predictions', (data) => {
-  renderCockpitSignals();
-  renderSignalsJournal();
+  renderSessionBar();
+  if (DataStore.activeView === 'cockpit') renderCockpitSignals();
+  if (DataStore.activeView === 'signals') renderSignalsJournal();
 });
 
 DataStore.subscribe('indices', (data) => {

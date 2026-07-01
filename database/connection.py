@@ -180,7 +180,9 @@ def execute_query(
         try:
             if is_sqlite:
                 cursor = conn.cursor()
-                cursor.execute(query, params or ())
+                # Convert PostgreSQL %s placeholders to SQLite ? placeholders
+                sqlite_query = query.replace("%s", "?")
+                cursor.execute(sqlite_query, params or ())
 
                 if fetch == "all":
                     rows = cursor.fetchall()
@@ -235,14 +237,20 @@ def execute_batch(query: str, params_list: list[tuple]) -> bool:
         if not conn:
             return False
 
+        db_url = get_database_url()
+        is_sqlite = db_url.startswith("sqlite")
+
         try:
             cursor = conn.cursor()
+            if is_sqlite:
+                query = query.replace("%s", "?")
             cursor.executemany(query, params_list)
             conn.commit()
             return True
         except Exception as e:
             logger.error(f"Batch execution failed: {e}. Query: {query[:100]}")
-            conn.rollback()
+            if not is_sqlite:
+                conn.rollback()
             raise e
 
 
@@ -548,6 +556,51 @@ def get_stock_price(symbol: str) -> dict[str, Any] | None:
     return execute_query(query, (symbol,), fetch="one")
 
 
+def get_sector_performance() -> list[dict[str, Any]]:
+    """Aggregate stock performance by sector."""
+    db_url = get_database_url()
+    is_sqlite = db_url.startswith("sqlite")
+    
+    if is_sqlite:
+        # SQLite-compatible query using ROW_NUMBER()
+        query = """
+            WITH ranked_prices AS (
+                SELECT 
+                    sp.symbol, s.sector, sp.change_pct,
+                    ROW_NUMBER() OVER (PARTITION BY sp.symbol ORDER BY sp.timestamp DESC) as rn
+                FROM stock_prices sp
+                JOIN stocks s ON sp.symbol = s.symbol
+                WHERE s.sector IS NOT NULL AND s.sector != ''
+            )
+            SELECT
+                sector AS name,
+                AVG(change_pct) AS change
+            FROM ranked_prices
+            WHERE rn = 1
+            GROUP BY sector
+            ORDER BY change DESC
+        """
+    else:
+        # PostgreSQL query using DISTINCT ON
+        query = """
+            WITH latest_prices AS (
+                SELECT DISTINCT ON (sp.symbol)
+                    sp.symbol, s.sector, sp.change_pct
+                FROM stock_prices sp
+                JOIN stocks s ON sp.symbol = s.symbol
+                WHERE s.sector IS NOT NULL AND s.sector != ''
+                ORDER BY sp.symbol, sp.timestamp DESC
+            )
+            SELECT
+                sector AS name,
+                AVG(change_pct) AS change
+            FROM latest_prices
+            GROUP BY sector
+            ORDER BY change DESC
+        """
+    return execute_query(query) or []
+
+
 def insert_prediction(prediction_data: dict[str, Any]) -> bool:
     """
     Insert a prediction.
@@ -596,7 +649,9 @@ def get_predictions(
     """
     query = """
         SELECT p.id, p.symbol, s.name, p.prediction, p.horizon, p.confidence,
-               p.actual_outcome, p.is_correct as result, p.reason, p.prediction_time as prediction_date, p.created_at
+               p.entry_price, p.stop_loss, p.target_price, p.actual_outcome,
+               CASE WHEN p.is_correct = 1 THEN 'correct' WHEN p.is_correct = 0 THEN 'wrong' ELSE 'pending' END as result,
+               p.reason, p.prediction_time as prediction_date, p.created_at
         FROM predictions p
         JOIN stocks s ON p.symbol = s.symbol
         WHERE 1=1
@@ -781,31 +836,11 @@ def get_system_health() -> list[dict[str, Any]]:
         List of health status dictionaries
     """
     query = """
-        SELECT DISTINCT ON (component)
-            component, status, value, message, timestamp
+        SELECT component, status, value, message, timestamp
         FROM system_health
-        ORDER BY component, timestamp DESC
-    """
-    return execute_query(query) or []
-
-
-def get_sector_performance() -> list[dict[str, Any]]:
-    """Aggregate stock performance by sector."""
-    query = """
-        WITH latest_prices AS (
-            SELECT DISTINCT ON (sp.symbol)
-                sp.symbol, s.sector, sp.change_pct
-            FROM stock_prices sp
-            JOIN stocks s ON sp.symbol = s.symbol
-            WHERE s.sector IS NOT NULL AND s.sector != ''
-            ORDER BY sp.symbol, sp.timestamp DESC
+        WHERE id IN (
+            SELECT MAX(id) FROM system_health GROUP BY component
         )
-        SELECT
-            sector AS name,
-            AVG(change_pct) AS change
-        FROM latest_prices
-        GROUP BY sector
-        ORDER BY change DESC
     """
     return execute_query(query) or []
 
@@ -816,32 +851,32 @@ def get_model_metrics() -> list[dict[str, Any]]:
         WITH pred_stats AS (
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN result = 'correct' THEN 1 ELSE 0 END) as correct,
-                SUM(CASE WHEN result = 'wrong' THEN 1 ELSE 0 END) as wrong
+                SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) as correct,
+                SUM(CASE WHEN is_correct = 0 THEN 1 ELSE 0 END) as wrong
             FROM predictions
-            WHERE result IN ('correct', 'wrong')
+            WHERE is_correct IN (0, 1)
         )
         SELECT
             'Win Rate' as key,
-            CASE WHEN total > 0 THEN ROUND((correct::numeric / total) * 100, 2) || '%' ELSE '0%' END as value,
-            CASE WHEN total > 0 AND (correct::numeric / total) > 0.5 THEN 'var(--green)' ELSE 'var(--red)' END as color
+            CASE WHEN total > 0 THEN ROUND((CAST(correct AS float) / total) * 100, 2) || '%' ELSE '0%' END as value,
+            CASE WHEN total > 0 AND (CAST(correct AS float) / total) > 0.5 THEN 'var(--green)' ELSE 'var(--red)' END as color
         FROM pred_stats
         UNION ALL
         SELECT
             'Total Predictions' as key,
-            total::text as value,
+            CAST(total AS text) as value,
             'var(--text)' as color
         FROM pred_stats
         UNION ALL
         SELECT
             'Correct' as key,
-            correct::text as value,
+            CAST(correct AS text) as value,
             'var(--green)' as color
         FROM pred_stats
         UNION ALL
         SELECT
             'Incorrect' as key,
-            wrong::text as value,
+            CAST(wrong AS text) as value,
             'var(--red)' as color
         FROM pred_stats
     """
@@ -859,13 +894,13 @@ def get_performance_metrics() -> list[dict[str, Any]]:
         )
         SELECT
             'Total Orders' as key,
-            total_orders::text as value,
+            CAST(total_orders AS text) as value,
             'var(--text)' as color
         FROM order_stats
         UNION ALL
         SELECT
             'Fill Rate' as key,
-            CASE WHEN total_orders > 0 THEN ROUND((filled_orders::numeric / total_orders) * 100, 2) || '%' ELSE '0%' END as value,
+            CASE WHEN total_orders > 0 THEN ROUND((CAST(filled_orders AS float) / total_orders) * 100, 2) || '%' ELSE '0%' END as value,
             'var(--green)' as color
         FROM order_stats
     """
@@ -875,13 +910,15 @@ def get_performance_metrics() -> list[dict[str, Any]]:
 def get_ticker_data() -> list[dict[str, Any]]:
     """Get top 10 most active stocks for the top ticker bar."""
     query = """
-        SELECT DISTINCT ON (sp.symbol)
-            sp.symbol as name,
-            sp.price as value,
-            sp.change_pct,
-            sp.change_pct >= 0 as up
+        SELECT sp.symbol as name,
+               sp.price as value,
+               sp.change_pct,
+               sp.change_pct >= 0 as up
         FROM stock_prices sp
-        ORDER BY sp.symbol, sp.timestamp DESC
+        WHERE sp.id IN (
+            SELECT MAX(id) FROM stock_prices GROUP BY symbol
+        )
+        ORDER BY ABS(sp.change_pct) DESC
         LIMIT 10
     """
     results = execute_query(query) or []
@@ -899,21 +936,68 @@ def get_ticker_data() -> list[dict[str, Any]]:
 
 
 def get_indices() -> list[dict[str, Any]]:
-    """Calculate synthetic index proxy based on top market cap stocks."""
-    query = """
-        WITH top_stocks AS (
-            SELECT DISTINCT ON (sp.symbol)
-                sp.price, sp.change_pct, sp.timestamp
-            FROM stock_prices sp
-            ORDER BY sp.symbol, sp.timestamp DESC
+    """Get latest ingested index ticks, falling back to an explicit stock-universe proxy."""
+    latest_ticks_query = """
+        WITH ranked_ticks AS (
+            SELECT
+                name,
+                value,
+                change,
+                ROW_NUMBER() OVER (PARTITION BY name ORDER BY timestamp DESC, id DESC) as rn
+            FROM index_ticks
         )
         SELECT
-            'NIFTY 50 PROXY' as name,
-            'NIFTY' as id,
-            COALESCE(SUM(price), 22000.0) as value,
-            COALESCE(AVG(change_pct), 0.0) as change
-        FROM top_stocks
+            LOWER(REPLACE(REPLACE(name, ' ', '_'), '&', 'and')) as id,
+            name,
+            value,
+            change
+        FROM ranked_ticks
+        WHERE rn = 1
+        ORDER BY name
     """
+    try:
+        rows = execute_query(latest_ticks_query) or []
+        if rows:
+            return rows
+    except Exception as e:
+        logger.warning(f"Index tick query failed, using stock proxy: {e}")
+
+    db_url = get_database_url()
+    is_sqlite = db_url.startswith("sqlite")
+    
+    if is_sqlite:
+        # SQLite-compatible query using ROW_NUMBER()
+        query = """
+            WITH ranked_stocks AS (
+                SELECT 
+                    sp.price, sp.change_pct, sp.timestamp,
+                    ROW_NUMBER() OVER (PARTITION BY sp.symbol ORDER BY sp.timestamp DESC) as rn
+                FROM stock_prices sp
+            )
+            SELECT
+                'NIFTY 50 PROXY' as name,
+                'NIFTY' as id,
+                COALESCE(SUM(price), 22000.0) as value,
+                COALESCE(AVG(change_pct), 0.0) as change
+            FROM ranked_stocks
+            WHERE rn = 1
+        """
+    else:
+        # PostgreSQL query using DISTINCT ON
+        query = """
+            WITH top_stocks AS (
+                SELECT DISTINCT ON (sp.symbol)
+                    sp.price, sp.change_pct, sp.timestamp
+                FROM stock_prices sp
+                ORDER BY sp.symbol, sp.timestamp DESC
+            )
+            SELECT
+                'NIFTY 50 PROXY' as name,
+                'NIFTY' as id,
+                COALESCE(SUM(price), 22000.0) as value,
+                COALESCE(AVG(change_pct), 0.0) as change
+            FROM top_stocks
+        """
     return execute_query(query) or []
 
 

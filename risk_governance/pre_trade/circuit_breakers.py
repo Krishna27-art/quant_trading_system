@@ -40,8 +40,9 @@ class CircuitBreaker:
     def check_api_latency(self, start_time: float, threshold_seconds: float = 30.0) -> bool:
         """
         If API takes too long to respond, send SMS alert.
+        `start_time` must be generated using `time.monotonic()`.
         """
-        latency = time.time() - start_time
+        latency = time.monotonic() - start_time
         if latency > threshold_seconds:
             msg = (
                 f"CRITICAL: Broker API Latency exceeded {threshold_seconds}s (took {latency:.2f}s)"
@@ -54,8 +55,9 @@ class CircuitBreaker:
     def check_ml_latency(self, start_time: float, threshold_seconds: float = 5.0) -> bool:
         """
         If ML inference blocks for > 5 seconds, skip the tick.
+        `start_time` must be generated using `time.monotonic()`.
         """
-        latency = time.time() - start_time
+        latency = time.monotonic() - start_time
         if latency > threshold_seconds:
             logger.error(
                 f"CIRCUIT BREAKER: ML inference latency {latency:.2f}s > {threshold_seconds}s. Skipping tick."

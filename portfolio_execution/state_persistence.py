@@ -90,16 +90,14 @@ class RedisStateStore:
                 self.client.ping()
                 logger.info(f"Connected to Redis at {self.config.redis_url}")
             except Exception as e:
-                logger.critical(
-                    f"Failed to connect to Redis: {e}. Strict mode enabled, shutting down."
+                logger.warning(
+                    f"Failed to connect to Redis: {e}. Falling back to local cache only."
                 )
-                raise RuntimeError(
-                    "Redis connection required for institutional state persistence"
-                ) from e
+                self.client = None
         else:
             if not REDIS_AVAILABLE:
-                logger.critical("Redis library not installed but required for state persistence.")
-                raise RuntimeError("Redis library required")
+                logger.warning("Redis library not installed. Using local cache only for state persistence.")
+                self.client = None
 
         # Load initial state
         self._load_all_state()

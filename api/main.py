@@ -26,13 +26,15 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 from pydantic import BaseModel
+import yfinance as yf
 
 load_dotenv()
 
+from api.auth import verify_token, router as auth_router
 from database.connection import (
     create_tables,
     get_latest_prices,
@@ -56,11 +58,19 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.include_router(auth_router, prefix="/api/auth")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://[::]:3000",
+        "http://[::1]:3000",
+        "*",
+    ],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -112,6 +122,9 @@ class StockData(BaseModel):
     market_cap: str
     sector: str
     signal: str
+    high_52w: float | None = None
+    low_52w: float | None = None
+    timestamp: str | None = None
 
 
 class PredictionData(BaseModel):
@@ -151,8 +164,8 @@ class TickerItem(BaseModel):
 class SectorItem(BaseModel):
     name: str
     change: float
-    top_stock: str
-    volume: int
+    top_stock: str | None = None
+    volume: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -173,18 +186,107 @@ def _to_int(v, default: int = 0) -> int:
         return default
 
 
-def _stock_from_row(p: dict) -> StockData:
+def _latest_signal_map() -> dict[str, str]:
+    """Map symbols to the latest stored model signal, if one exists."""
+    try:
+        rows = get_predictions(limit=5000)
+    except Exception:
+        return {}
+
+    signals: dict[str, str] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        prediction = str(row.get("prediction") or "").upper()
+        if symbol and symbol not in signals and prediction in {"BUY", "SELL", "HOLD"}:
+            signals[symbol] = prediction
+    return signals
+
+
+def _stock_from_row(p: dict, signal_map: dict[str, str] | None = None) -> StockData:
+    symbol = str(p["symbol"]).upper()
+    ts = p.get("timestamp")
     return StockData(
-        symbol=p["symbol"],
-        name=p.get("name") or p["symbol"],
+        symbol=symbol,
+        name=p.get("name") or symbol,
         price=_to_float(p.get("price")),
         change=_to_float(p.get("change")),
         change_pct=_to_float(p.get("change_pct")),
         volume=_to_int(p.get("volume")),
         market_cap=str(p.get("market_cap") or ""),
         sector=str(p.get("sector") or "Unknown"),
-        signal=str(p.get("signal") or "HOLD"),
+        signal=(signal_map or {}).get(symbol, str(p.get("signal") or "HOLD")),
+        high_52w=_to_float(p.get("high_52w")) or None,
+        low_52w=_to_float(p.get("low_52w")) or None,
+        timestamp=ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else None),
     )
+
+
+def _ema(values: list[float], window: int) -> list[float]:
+    if not values:
+        return []
+    alpha = 2 / (window + 1)
+    out = [values[0]]
+    for value in values[1:]:
+        out.append((value * alpha) + (out[-1] * (1 - alpha)))
+    return out
+
+
+def _rsi(values: list[float], window: int = 14) -> float | None:
+    if len(values) <= window:
+        return None
+    gains: list[float] = []
+    losses: list[float] = []
+    for prev, cur in zip(values[-window - 1:-1], values[-window:], strict=False):
+        diff = cur - prev
+        gains.append(max(diff, 0.0))
+        losses.append(max(-diff, 0.0))
+    avg_loss = sum(losses) / window
+    if avg_loss == 0:
+        return 100.0
+    rs = (sum(gains) / window) / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def _derive_history_payload(hist) -> dict:
+    closes = [round(float(v), 2) for v in hist["Close"]]
+    highs = [round(float(v), 2) for v in hist["High"]]
+    lows = [round(float(v), 2) for v in hist["Low"]]
+    opens = [round(float(v), 2) for v in hist["Open"]]
+    volumes = [int(v) for v in hist["Volume"]]
+    dates = [d.strftime("%Y-%m-%d %H:%M") for d in hist.index]
+
+    ema20 = _ema(closes, 20)
+    ema50 = _ema(closes, 50)
+    latest_close = closes[-1]
+    latest_rsi = _rsi(closes)
+    high_window = max(highs[-60:]) if highs else latest_close
+    low_window = min(lows[-60:]) if lows else latest_close
+
+    indicators = {
+        "rsi_14": round(latest_rsi, 2) if latest_rsi is not None else None,
+        "ema_20": round(ema20[-1], 2) if ema20 else None,
+        "ema_50": round(ema50[-1], 2) if ema50 else None,
+        "volume": volumes[-1] if volumes else None,
+        "close_vs_ema20_pct": round(((latest_close / ema20[-1]) - 1) * 100, 2) if ema20 and ema20[-1] else None,
+    }
+
+    levels = {
+        "resistance": round(high_window, 2),
+        "support": round(low_window, 2),
+        "midpoint": round((high_window + low_window) / 2, 2),
+    }
+
+    return {
+        "dates": dates,
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "prices": closes,
+        "volumes": volumes,
+        "indicators": indicators,
+        "levels": levels,
+        "source": "yfinance",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -215,28 +317,46 @@ def get_system_health():
         statuses.append(HealthStatus(name="Database", status="degraded", value="Error", message=str(e)[:120]))
 
     # Model artifacts
-    model_dir = Path(os.getenv("MODEL_DIR", "models/saved"))
-    model_files = list(model_dir.glob("*.pkl")) if model_dir.exists() else []
-    if model_files:
+    model_dir = Path(os.getenv("MODEL_DIR", "data/production/models"))
+    model_items = []
+    if model_dir.exists():
+        for item in model_dir.iterdir():
+            if item.is_dir() or item.suffix in (".joblib", ".pkl"):
+                model_items.append(item.name)
+                
+    if model_items:
         statuses.append(HealthStatus(
             name="ML Models",
             status="healthy",
-            value=f"{len(model_files)} loaded",
-            message=", ".join(f.stem for f in model_files),
+            value=f"{len(model_items)} loaded",
+            message=", ".join(model_items),
         ))
     else:
         statuses.append(HealthStatus(
             name="ML Models",
             status="degraded",
             value="Missing",
-            message=f"No .pkl files in {model_dir}. Run training/train_models.py.",
+            message=f"No models found in {model_dir}.",
         ))
 
     # Data pipeline freshness (rough check: latest price timestamp)
     try:
         prices = get_latest_prices()
-        msg = f"{len(prices)} symbols in price table" if prices else "No price data"
-        statuses.append(HealthStatus(name="Data Pipeline", status="healthy" if prices else "degraded", value="OK", message=msg))
+        priced = {str(p.get("symbol") or "").upper() for p in prices}
+        try:
+            from config.universe import NSE_UNIVERSE
+            expected = {str(s["symbol"]).upper() for s in NSE_UNIVERSE}
+        except Exception:
+            expected = priced
+        missing = sorted(expected - priced)
+        coverage = f"{len(priced)}/{len(expected)}"
+        msg = f"Missing prices: {', '.join(missing[:8])}" if missing else "All configured symbols priced"
+        statuses.append(HealthStatus(
+            name="Data Pipeline",
+            status="healthy" if prices and not missing else "degraded",
+            value=coverage,
+            message=msg,
+        ))
     except Exception as e:
         statuses.append(HealthStatus(name="Data Pipeline", status="degraded", value="Error", message=str(e)[:120]))
 
@@ -267,10 +387,12 @@ def api_get_indices():
 def get_stocks(
     sector: str | None = Query(default=None),
     search: str | None = Query(default=None),
+    current_user: dict = Depends(verify_token),
 ):
     try:
         prices = get_latest_prices()
-        stocks = [_stock_from_row(p) for p in prices]
+        signal_map = _latest_signal_map()
+        stocks = [_stock_from_row(p, signal_map) for p in prices]
 
         if sector:
             stocks = [s for s in stocks if s.sector.lower() == sector.lower()]
@@ -291,12 +413,60 @@ def get_stock(symbol: str):
         p = get_stock_price(symbol.upper())
         if not p:
             raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
-        return _stock_from_row(p)
+        return _stock_from_row(p, _latest_signal_map())
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"get_stock({symbol}) failed: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@app.get("/api/stocks/{symbol}/history")
+def get_stock_history(symbol: str, days: int = Query(default=180, le=365)):
+    """Fetch daily stock history from yfinance for charting."""
+    try:
+        yf_symbol = f"{symbol.upper()}.NS"
+        ticker = yf.Ticker(yf_symbol)
+        
+        # Determine period/interval
+        if days <= 5:
+            period = "5d"
+            interval = "15m"
+        elif days <= 30:
+            period = "1mo"
+            interval = "1h"
+        elif days <= 90:
+            period = "3mo"
+            interval = "1d"
+        elif days <= 180:
+            period = "6mo"
+            interval = "1d"
+        else:
+            period = "1y"
+            interval = "1d"
+            
+        hist = ticker.history(period=period, interval=interval, auto_adjust=True)
+        if hist.empty:
+            latest = get_stock_price(symbol.upper())
+            if not latest:
+                return {"dates": [], "prices": [], "volumes": [], "source": "empty"}
+            ts = latest.get("timestamp")
+            return {
+                "dates": [ts.isoformat() if hasattr(ts, "isoformat") else str(ts or "")],
+                "open": [_to_float(latest.get("price"))],
+                "high": [_to_float(latest.get("price"))],
+                "low": [_to_float(latest.get("price"))],
+                "prices": [_to_float(latest.get("price"))],
+                "volumes": [_to_int(latest.get("volume"))],
+                "indicators": {},
+                "levels": {},
+                "source": "database_latest",
+            }
+
+        return _derive_history_payload(hist.dropna(subset=["Close"]))
+    except Exception as e:
+        logger.error(f"Failed to fetch history for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/predictions", response_model=list[PredictionData])
@@ -317,8 +487,16 @@ def api_get_predictions(
         result = []
         for p in rows:
             pd_val = p.get("prediction_date") or p.get("prediction_time")
+            # Handle both datetime objects and string values
+            if pd_val:
+                if isinstance(pd_val, str):
+                    date_str = pd_val
+                else:
+                    date_str = pd_val.isoformat()
+            else:
+                date_str = ""
             result.append(PredictionData(
-                date=pd_val.isoformat() if pd_val else "",
+                date=date_str,
                 symbol=p["symbol"],
                 prediction=p["prediction"],
                 horizon=p["horizon"],
@@ -501,21 +679,7 @@ def get_news(symbol: str):
         raise HTTPException(status_code=503, detail="Database unavailable")
 
 
-@app.post("/api/auth/login")
-def login():
-    """
-    Development-only token endpoint.
-    Disabled in LIVE and PAPER environments — requests will 403.
-    """
-    env = os.getenv("ENV", "LOCAL")
-    if env in ("LIVE", "PAPER"):
-        raise HTTPException(status_code=403, detail="Auth endpoint disabled in production. Use the broker SSO flow.")
-    return {
-        "access_token": "dev_token_not_for_production",
-        "token_type": "bearer",
-        "expires_in": 3600,
-        "warning": "This token is for local development only.",
-    }
+
 
 
 if __name__ == "__main__":

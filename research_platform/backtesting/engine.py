@@ -644,14 +644,14 @@ class BacktestingEngine:
 
         return result
 
-    def _calculate_sharpe_ratio(self, returns: list[float], periods_per_year: int) -> float:
+    def _calculate_sharpe_ratio(self, returns: list[float], periods_per_year: int = 252) -> float:
         """Calculate Sharpe ratio, scaled by the actual return periodicity."""
         if not returns or np.std(returns) == 0:
             return 0.0
 
         return np.mean(returns) / np.std(returns) * np.sqrt(periods_per_year)
 
-    def _calculate_sortino_ratio(self, returns: list[float], periods_per_year: int) -> float:
+    def _calculate_sortino_ratio(self, returns: list[float], periods_per_year: int = 252) -> float:
         """Calculate Sortino ratio, scaled by the actual return periodicity."""
         if not returns:
             return 0.0

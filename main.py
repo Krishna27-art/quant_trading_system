@@ -1,12 +1,21 @@
 """
 Central Trading Orchestrator Main Entry Point
 
+⚠️  SYNTHETIC DRY-RUN MODE ⚠️
+This script uses MOCK DATA (np.random.normal() noise around hardcoded seed prices).
+It does NOT use real NSE historical data or real market conditions.
+Results are NOT indicative of real trading performance.
+
+For real backtesting, use:
+    - scripts/run_daytrading_backtest.py (with real yfinance data)
+    - scripts/run_walkforward_backtest.py (walk-forward validation)
+
 Wires the entire platform:
     Data Feed → Bar Aggregator → State Manager → Alpha Signals → Risk Filter → OMS → EMS
 
 Supports three execution modes:
-    - BACKTEST: Simulates historical execution using 1m bars.
-    - PAPER: Simulates live execution using real-time simulated ticks.
+    - BACKTEST: Simulates historical execution using 1m bars (SYNTHETIC DATA).
+    - PAPER: Simulates live execution using real-time simulated ticks (SYNTHETIC DATA).
     - LIVE: Connects to live broker feed and execution adapters.
 """
 

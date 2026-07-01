@@ -16,7 +16,11 @@ def extract_macro_features() -> dict:
         "usd_inr_chg": 0.0,
         "dow_chg": 0.0,
         "nasdaq_chg": 0.0,
-        "market_regime": 1,  # 1=Normal, 0=Caution, -1=Risk Off
+        # Regime encoding MUST match RegimeClassifier and training pipeline:
+        # 0 = Normal (low VIX, stable)
+        # 1 = Caution (VIX 20-25)
+        # 2 = Risk-Off (VIX > 25)
+        "market_regime": 0,
     }
 
     try:
@@ -35,9 +39,9 @@ def extract_macro_features() -> dict:
             vix_val = close_data["^INDIAVIX"].dropna().iloc[-1]
             features["vix_level"] = round(float(vix_val), 2)
             if vix_val > 25:
-                features["market_regime"] = -1
+                features["market_regime"] = 2   # Risk-Off
             elif vix_val > 20:
-                features["market_regime"] = 0
+                features["market_regime"] = 1   # Caution
 
         # USD/INR
         if "INR=X" in close_data.columns:

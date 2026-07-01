@@ -592,6 +592,7 @@ class OrderManagementSystem:
         else:
             order.update_status(OrderStatus.REJECTED, result.reason)
             order.rejection_reason = result.reason
+            self._wash_guard.clear(order.symbol, order.side.value, order.setup_type or "manual")
             self._release_borrow_if_needed(order)
             self._orders[order.order_id] = order
             if self._on_order_update:

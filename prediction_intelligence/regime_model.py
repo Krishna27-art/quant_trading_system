@@ -26,7 +26,7 @@ class RegimeClassifier:
         if "vix" not in features_df.columns or "nifty_momentum" not in features_df.columns:
             raise ValueError("Regime classifier requires 'vix' and 'nifty_momentum' features.")
 
-        X = features_df[["vix", "nifty_momentum"]].fillna(method="ffill").dropna()
+        X = features_df[["vix", "nifty_momentum"]].ffill().dropna()
         if len(X) > 10:
             self.gmm.fit(X)
             self.is_trained = True

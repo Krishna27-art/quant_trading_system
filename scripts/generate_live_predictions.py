@@ -33,7 +33,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from database.db_sync import SessionLocal
 from database.models import IndexTick, Prediction, Tick
 from data_platform.feature_store.macro import extract_macro_features
-from QuantResearchOS.ml.inference.calibration import calibrate_or_passthrough
+from prediction_intelligence.base_logistic import (
+    INTRADAY_FEATURES, 
+    LONGTERM_FEATURES, 
+    SWING_FEATURES,
+    ModelRegistry,
+    build_features as canonical_build_features
+)
+from prediction_intelligence.calibration import calibrate_or_passthrough
+from prediction_intelligence.signal_adapter import SignalPrediction
+
+_registry = ModelRegistry()
+from risk_governance.pre_trade.circuit_breakers import CircuitBreaker
+from risk_governance.pre_trade.portfolio_risk import PortfolioRiskEngine
+from risk_governance.pre_trade.historical_var import HistoricalVaR
 from utils.logger import get_logger
 from utils.time_utils import now_ist
 
@@ -45,12 +58,8 @@ logger = get_logger("live_predictions")
 
 MODEL_DIR = Path(os.getenv("MODEL_DIR", "models/saved"))
 
-# NSE symbols to score. Expand this list as training data grows.
-SYMBOLS = [
-    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
-    "TATAMOTORS", "ITC", "SBIN", "HINDUNILVR", "BAJFINANCE",
-    "KOTAKBANK", "AXISBANK", "LT", "ASIANPAINT", "MARUTI",
-]
+from config.universe import NSE_UNIVERSE
+SYMBOLS = [s["symbol"] for s in NSE_UNIVERSE]
 
 # Timeframe config: yfinance period/interval, ATR window, target/SL multiples
 TIMEFRAME_CONFIG = {
@@ -61,7 +70,6 @@ TIMEFRAME_CONFIG = {
         "atr_window": 14,
         "target_pct": 0.015,
         "sl_pct": 0.0075,
-        "model_file": "intraday_lgbm.pkl",
         "model_version_key": "INTRADAY_MODEL_VERSION",
         "default_version": "LGBM_INTRADAY_v1",
     },
@@ -72,9 +80,11 @@ TIMEFRAME_CONFIG = {
         "atr_window": 14,
         "target_pct": 0.03,
         "sl_pct": 0.015,
-        "model_file": "swing_lgbm.pkl",
         "model_version_key": "SWING_MODEL_VERSION",
-        "default_version": "LGBM_SWING_v1",
+        # ENSEMBLE_ prefix is required: ModelRegistry uses it to detect EnsembleModel
+        # vs BaseLogistic (joblib). train_base_models.py saves to XGB_SWING_v1/ dir but
+        # registers under the ENSEMBLE_SWING_v1 key in the singleton.
+        "default_version": "ENSEMBLE_SWING_v1",
     },
     "LONGTERM": {
         "period": "2y",
@@ -83,9 +93,8 @@ TIMEFRAME_CONFIG = {
         "atr_window": 10,
         "target_pct": 0.20,
         "sl_pct": 0.10,
-        "model_file": "longterm_lgbm.pkl",
         "model_version_key": "LONGTERM_MODEL_VERSION",
-        "default_version": "LGBM_LONGTERM_v1",
+        "default_version": "LOGREG_LONGTERM_v1",
     },
 }
 
@@ -96,37 +105,55 @@ MIN_WIN_PROB = 0.55
 
 # Indian round-trip transaction cost floor (STT + brokerage + GST + exchange + stamp)
 # Real retail cost is ~0.35-0.60% round trip. We use 0.40% as conservative floor.
-ROUNDTRIP_COST_PCT = 0.004
+BASE_ROUNDTRIP_COST_PCT = 0.004
+
+# Per-symbol slippage multipliers based on liquidity (volume-based)
+# Higher volume = lower slippage, lower volume = higher slippage
+SYMBOL_SLIPPAGE_MULTIPLIERS = {
+    "RELIANCE": 0.8,  # High liquidity
+    "TCS": 0.8,       # High liquidity
+    "HDFCBANK": 0.8,  # High liquidity
+    "ICICIBANK": 0.8, # High liquidity
+    "INFY": 0.9,      # High liquidity
+    "SBIN": 0.9,      # High liquidity
+    "ITC": 1.0,       # Medium liquidity
+    "HINDUNILVR": 1.0, # Medium liquidity
+    "KOTAKBANK": 0.9,  # High liquidity
+    "AXISBANK": 1.0,   # Medium liquidity
+    "LT": 1.2,         # Lower liquidity
+    "ASIANPAINT": 1.0, # Medium liquidity
+    "MARUTI": 1.2,     # Lower liquidity
+    "BAJFINANCE": 1.5, # Lower liquidity
+    "WIPRO": 1.5,      # Mid-cap liquidity adjustment
+}
+
+# Default multiplier for symbols not in the map
+DEFAULT_SLIPPAGE_MULTIPLIER = 1.2
 
 
 # ---------------------------------------------------------------------------
-# Model loader — loads a serialized sklearn-compatible model
+# Model loader — uses ModelRegistry for unified artifact contract
 # ---------------------------------------------------------------------------
 
-def load_model(model_file: str) -> Optional[object]:
+def load_model(model_version: str, timeframe: str) -> Optional[object]:
     """
-    Load a serialized model from MODEL_DIR.
-    Returns None if the file does not exist — caller must handle this.
-    Never raises — a missing model means skip the timeframe, not crash.
+    Load a model using ModelRegistry singleton (unified with train_base_models.py).
+    Returns None if the model does not exist — caller must handle this.
     """
-    import pickle
-    path = MODEL_DIR / model_file
-    if not path.exists():
-        logger.warning(
-            f"Model file not found: {path}. "
-            f"Run training/train_models.py to generate it. "
-            f"Skipping this timeframe."
-        )
-        return None
     try:
-        with open(path, "rb") as f:
-            model = pickle.load(f)
-        logger.info(f"Loaded model: {path}")
+        model = _registry.get(model_version, timeframe)
+        if not model.is_ready():
+            logger.warning(
+                f"Model {model_version} for {timeframe} not ready in ModelRegistry. "
+                f"Run scripts/train_base_models.py to generate it."
+            )
+            return None
+
+        logger.info(f"Loaded model: {model_version} for {timeframe}")
         return model
     except Exception as e:
-        logger.error(f"Failed to load model {path}: {e}")
+        logger.error(f"Failed to load model {model_version}: {e}")
         return None
-
 
 def get_model_version(version_key: str, default: str) -> str:
     return os.getenv(version_key, default)
@@ -197,88 +224,59 @@ def compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def build_features(df: pd.DataFrame, atr_window: int, macro: dict) -> Optional[pd.Series]:
+def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[str, dict[str, float]]:
     """
-    Compute a feature vector from the last bar of df.
-    Returns None if any critical feature is NaN.
+    Convert the current feature row into a long/short side.
 
-    Features:
-      - rsi_14           : RSI(14) of close
-      - ma20_z           : (close - MA20) / std20  — mean reversion z-score
-      - ma50_z           : (close - MA50) / std50
-      - atr_pct          : ATR / close — normalized volatility
-      - vwap_dist        : (close - VWAP) / VWAP — intraday momentum proxy
-      - vol_ratio        : volume[-1] / volume[-20].mean() — volume surge
-      - ret_1            : 1-bar return
-      - ret_5            : 5-bar return
-      - ret_20           : 20-bar return
-      - vix_level        : India VIX
-      - market_regime    : -1/0/1 from VIX thresholds
-      - usd_inr_chg      : USD/INR 1-day change %
-      - dow_chg          : Dow Jones overnight change %
+    The loaded model supplies setup success probability; direction is inferred
+    from the same no-lookahead feature row, never from a hardcoded BUY default.
     """
-    close = df["close"]
-    high = df["high"]
-    low = df["low"]
-    volume = df["volume"]
+    tf = timeframe.upper()
+    votes: dict[str, float] = {}
 
-    features = {}
+    def value(name: str, default: float = 0.0) -> float:
+        try:
+            v = float(features.get(name, default))
+            return 0.0 if np.isnan(v) else v
+        except (TypeError, ValueError):
+            return default
 
-    # RSI
-    rsi = compute_rsi(close, 14)
-    features["rsi_14"] = rsi.iloc[-1]
+    if tf == "INTRADAY":
+        rsi = value("rsi_14m", 50.0)
+        momentum = value("momentum_5m")
+        vwap_dist = value("vwap_dist")
+        vol_ratio = value("vol_ratio_1m", 1.0)
 
-    # Mean reversion z-scores
-    for w in [20, 50]:
-        if len(close) >= w:
-            ma = close.rolling(w).mean()
-            std = close.rolling(w).std()
-            z = (close - ma) / std.replace(0, np.nan)
-            features[f"ma{w}_z"] = z.iloc[-1]
-        else:
-            features[f"ma{w}_z"] = np.nan
+        votes["momentum_5m"] = 1.0 if momentum > 0 else -1.0 if momentum < 0 else 0.0
+        votes["vwap_dist"] = 0.75 if vwap_dist > 0 else -0.75 if vwap_dist < 0 else 0.0
+        votes["rsi_14m"] = 0.5 if 35 <= rsi <= 65 and momentum >= 0 else -0.5 if rsi > 70 else 0.5 if rsi < 30 else 0.0
+        votes["volume_confirmation"] = 0.25 if vol_ratio >= 1.0 and momentum >= 0 else -0.25 if vol_ratio >= 1.0 else 0.0
+    elif tf == "SWING":
+        rsi = value("rsi_14d", 50.0)
+        ma20_slope = value("ma20_slope")
+        z_score = value("z_score_20d")
+        volume_ratio = value("volume_ratio", 1.0)
 
-    # ATR normalized
-    atr = compute_atr(df, atr_window)
-    current_close = close.iloc[-1]
-    features["atr_pct"] = atr.iloc[-1] / current_close if current_close > 0 else np.nan
-
-    # VWAP distance (uses full available history as proxy)
-    cum_vol = volume.cumsum()
-    cum_val = (close * volume).cumsum()
-    vwap = cum_val / cum_vol.replace(0, np.nan)
-    features["vwap_dist"] = (close.iloc[-1] - vwap.iloc[-1]) / vwap.iloc[-1] if vwap.iloc[-1] > 0 else 0.0
-
-    # Volume ratio
-    if len(volume) >= 20:
-        features["vol_ratio"] = volume.iloc[-1] / volume.iloc[-20:].mean() if volume.iloc[-20:].mean() > 0 else 1.0
+        votes["ma20_slope"] = 1.0 if ma20_slope > 0 else -1.0 if ma20_slope < 0 else 0.0
+        votes["z_score_20d"] = 0.75 if z_score > 0 else -0.75 if z_score < 0 else 0.0
+        votes["rsi_14d"] = 0.5 if 45 <= rsi <= 65 else -0.5 if rsi > 70 else 0.5 if rsi < 35 else 0.0
+        votes["volume_confirmation"] = 0.25 if volume_ratio >= 1.0 and ma20_slope >= 0 else -0.25 if volume_ratio >= 1.0 else 0.0
     else:
-        features["vol_ratio"] = 1.0
+        rsi = value("rsi_14w", 50.0)
+        ma50_slope = value("ma50_slope")
+        price_to_high = value("price_to_52w_high", 1.0)
+        vol_ratio = value("vol_ratio", 1.0)
 
-    # Return features
-    for lag, key in [(1, "ret_1"), (5, "ret_5"), (20, "ret_20")]:
-        if len(close) > lag:
-            features[key] = float((close.iloc[-1] / close.iloc[-lag - 1]) - 1)
-        else:
-            features[key] = np.nan
+        votes["ma50_slope"] = 1.0 if ma50_slope > 0 else -1.0 if ma50_slope < 0 else 0.0
+        votes["price_to_52w_high"] = 0.5 if price_to_high >= 0.80 else -0.5
+        votes["rsi_14w"] = 0.5 if 45 <= rsi <= 68 else -0.5 if rsi > 72 else 0.25 if rsi < 35 else 0.0
+        votes["volatility_regime"] = -0.25 if vol_ratio > 1.4 else 0.25
 
-    # Macro
-    features["vix_level"] = macro.get("vix_level", 15.0)
-    features["market_regime"] = macro.get("market_regime", 1)
-    features["usd_inr_chg"] = macro.get("usd_inr_chg", 0.0)
-    features["dow_chg"] = macro.get("dow_chg", 0.0)
+    score = sum(votes.values())
+    return ("BUY" if score >= 0 else "SELL"), {k: round(v, 4) for k, v in votes.items()}
 
-    s = pd.Series(features)
 
-    # Drop if critical features are NaN
-    critical = ["rsi_14", "atr_pct", "ret_1", "ret_5"]
-    if s[critical].isna().any():
-        logger.warning(f"Critical features NaN: {s[critical][s[critical].isna()].index.tolist()}")
-        return None
 
-    # Fill non-critical NaN with 0
-    s = s.fillna(0.0)
-    return s
 
 
 def compute_sl_target(entry: float, direction: str, atr: float,
@@ -317,6 +315,9 @@ def generate_predictions_for_timeframe(
     model_version: str,
     macro: dict,
     config: dict,
+    circuit_breaker: CircuitBreaker,
+    portfolio_risk: PortfolioRiskEngine,
+    now: "datetime",
 ) -> list[dict]:
     """
     Score all SYMBOLS for one timeframe using the loaded model.
@@ -325,11 +326,17 @@ def generate_predictions_for_timeframe(
     predictions = []
     atr_window = config["atr_window"]
 
-    FEATURE_COLS = [
-        "rsi_14", "ma20_z", "ma50_z", "atr_pct", "vwap_dist",
-        "vol_ratio", "ret_1", "ret_5", "ret_20",
-        "vix_level", "market_regime", "usd_inr_chg", "dow_chg",
-    ]
+    # Use canonical feature definitions from base_logistic.py
+    # This ensures training and inference use the same feature columns
+    if timeframe == "INTRADAY":
+        FEATURE_COLS = INTRADAY_FEATURES
+    elif timeframe == "SWING":
+        FEATURE_COLS = SWING_FEATURES
+    elif timeframe == "LONGTERM":
+        FEATURE_COLS = LONGTERM_FEATURES
+    else:
+        logger.error(f"Unknown timeframe: {timeframe}")
+        return []
 
     for sym in SYMBOLS:
         try:
@@ -337,19 +344,34 @@ def generate_predictions_for_timeframe(
             if df is None:
                 continue
 
-            features = build_features(df, atr_window, macro)
-            if features is None:
+            df_feats = canonical_build_features(df, timeframe, extra=macro)
+            if df_feats.empty:
                 logger.warning(f"{sym} [{timeframe}]: feature build failed, skipping.")
                 continue
 
-            # Align features to expected model columns
-            X = features[FEATURE_COLS].values.reshape(1, -1)
+            # Take the last row for live prediction
+            features = df_feats.iloc[-1].fillna(0.0)
+
+            # Align features to the expected model columns.
+            # Allow a partial match — missing columns will be filled with 0.0 by
+            # the model's internal SimpleImputer. Only skip if ALL columns are missing.
+            available_features = [f for f in FEATURE_COLS if f in features.index]
+            if not available_features:
+                logger.warning(f"{sym} [{timeframe}]: no features matched {FEATURE_COLS}, skipping.")
+                continue
+            missing = set(FEATURE_COLS) - set(available_features)
+            if missing:
+                logger.debug(f"{sym} [{timeframe}]: filling {len(missing)} missing features with 0: {missing}")
+                for col in missing:
+                    features[col] = 0.0
+                available_features = FEATURE_COLS
+
+            X = pd.DataFrame([features[available_features]])
 
             # Get calibrated probability from model
             try:
                 proba = model.predict_proba(X)[0]
-                # proba is [p_loss, p_win] for binary classifiers
-                win_prob = float(proba[1]) if len(proba) == 2 else float(proba[0])
+                win_prob = float(proba)
             except AttributeError:
                 # Regressor — treat output as a score, normalize to 0-1
                 raw = float(model.predict(X)[0])
@@ -363,39 +385,51 @@ def generate_predictions_for_timeframe(
             if win_prob != raw_win_prob:
                 logger.debug(f"{sym} [{timeframe}]: raw={raw_win_prob:.3f} calibrated={win_prob:.3f}")
 
+            direction, direction_votes = infer_direction_from_features(features, timeframe)
+
             # Hard filter: only emit high-confidence predictions
+            # Do this AFTER direction logic, so direction isn't dead
             if win_prob < MIN_WIN_PROB:
                 logger.debug(f"{sym} [{timeframe}]: win_prob={win_prob:.3f} below threshold, skipping.")
                 continue
 
+            # Circuit breaker: VIX-based position sizing check
+            current_vix = macro.get("vix_level", 15.0)
+            vix_allowed, adjusted_confidence = circuit_breaker.check_vix_limits(current_vix, win_prob)
+            if not vix_allowed:
+                logger.warning(f"{sym} [{timeframe}]: VIX circuit breaker triggered (VIX={current_vix}), skipping.")
+                continue
+            win_prob = adjusted_confidence  # Use confidence adjusted by circuit breaker
+
             # Net edge check: expected value after transaction costs
             # EV = win_prob * target_pct - (1 - win_prob) * sl_pct - roundtrip_cost
+            # Use per-symbol slippage multiplier based on liquidity
+            slippage_multiplier = SYMBOL_SLIPPAGE_MULTIPLIERS.get(sym, DEFAULT_SLIPPAGE_MULTIPLIER)
+            adjusted_roundtrip_cost = BASE_ROUNDTRIP_COST_PCT * slippage_multiplier
+
             ev = (win_prob * config["target_pct"]
                   - (1 - win_prob) * config["sl_pct"]
-                  - ROUNDTRIP_COST_PCT)
+                  - adjusted_roundtrip_cost)
             if ev <= 0:
-                logger.debug(f"{sym} [{timeframe}]: EV={ev:.4f} negative after costs, skipping.")
+                logger.debug(f"{sym} [{timeframe}]: EV={ev:.4f} negative after costs (slippage_mult={slippage_multiplier}), skipping.")
                 continue
 
             entry = round(float(df["close"].iloc[-1]), 2)
             atr_val = compute_atr(df, atr_window).iloc[-1]
 
-            direction = "BUY" if win_prob >= MIN_WIN_PROB else "SELL"
             sl, target = compute_sl_target(
                 entry, direction, atr_val,
                 config["target_pct"], config["sl_pct"]
             )
 
             feat_summary = {
-                "rsi_14": round(float(features["rsi_14"]), 2),
-                "ma20_z": round(float(features["ma20_z"]), 3),
-                "vwap_dist": round(float(features["vwap_dist"]), 4),
-                "atr_pct": round(float(features["atr_pct"]), 4),
-                "ret_5": round(float(features["ret_5"]), 4),
                 "vix_level": macro.get("vix_level"),
                 "market_regime": macro.get("market_regime"),
                 "ev_estimate": round(ev, 4),
+                "direction_votes": direction_votes,
             }
+            for feat_name in available_features:
+                feat_summary[feat_name] = round(float(features[feat_name]), 4)
 
             predictions.append({
                 "symbol": sym,
@@ -459,6 +493,13 @@ def run():
         logger.critical("Database session unavailable. Check DATABASE_URL. Aborting.")
         sys.exit(1)
 
+    # Initialize risk governance components
+    circuit_breaker = CircuitBreaker()
+    portfolio_risk = PortfolioRiskEngine(total_capital=10_000_000)
+    historical_var = HistoricalVaR(confidence_level=0.99, lookback_window=252)
+
+    logger.info("Risk governance components initialized")
+
     # Fetch macro features once — shared across all timeframes
     macro = extract_macro_features()
     logger.info(f"Macro: VIX={macro.get('vix_level')} regime={macro.get('market_regime')}")
@@ -479,16 +520,16 @@ def run():
         all_predictions = []
 
         for timeframe, config in TIMEFRAME_CONFIG.items():
-            model = load_model(config["model_file"])
-            if model is None:
-                # No trained model — skip this timeframe entirely
-                # Run training/train_models.py to create the artifact
-                continue
-
             model_version = get_model_version(
                 config["model_version_key"],
                 config["default_version"],
             )
+
+            model = load_model(model_version, timeframe)
+            if model is None:
+                # No trained model — skip this timeframe entirely
+                # Run scripts/train_base_models.py to create the artifact
+                continue
 
             preds = generate_predictions_for_timeframe(
                 timeframe=timeframe,
@@ -496,6 +537,9 @@ def run():
                 model_version=model_version,
                 macro=macro,
                 config=config,
+                circuit_breaker=circuit_breaker,
+                portfolio_risk=portfolio_risk,
+                now=now,
             )
             all_predictions.extend(preds)
 

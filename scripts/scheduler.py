@@ -7,9 +7,7 @@ import time
 import redis
 
 from agents.llm_client import llm
-from data.angel_one_feed import AngelOneDataFeeder
-from data.multiplexer import TickMultiplexer
-from data.upstox_feed import UpstoxDataFeeder
+from data_platform.feeds.feed_manager import FeedManager, FeedTier, TickData
 from utils.structured_logger import get_structured_logger
 
 logger = get_structured_logger("multiprocess_scheduler")
@@ -17,61 +15,74 @@ logger = get_structured_logger("multiprocess_scheduler")
 # --- Process Workers ---
 
 
-def run_angelone_feed():
-    logger.info("Starting Angel One Feed Process...")
-    feeder = AngelOneDataFeeder()
-    feeder.start_stream()
+def run_feed_manager():
+    """Run the unified FeedManager instead of separate feed processes."""
+    logger.info("Starting Feed Manager Process...")
 
+    # Create a FeedManager instance
+    feed_manager = FeedManager(
+        staleness_threshold_s=10.0,
+        max_consecutive_failures=5,
+        rest_poll_interval_s=1.0,
+        on_tick=lambda tick: logger.debug(f"Tick received: {tick.symbol} @ {tick.ltp}"),
+        on_failover=lambda old, new: logger.warning(f"Feed failover: {old} -> {new}"),
+    )
 
-def run_upstox_feed():
-    logger.info("Starting Upstox Feed Process...")
-    feeder = UpstoxDataFeeder()
-    asyncio.run(feeder.connect_and_stream())
+    # Subscribe to symbols
+    from config.universe import NSE_UNIVERSE
+    symbols = [f"{s['symbol']}.NS" for s in NSE_UNIVERSE]
+    feed_manager.subscribe(symbols)
 
-
-def run_multiplexer():
-    logger.info("Starting Multiplexer Process...")
-    mux = TickMultiplexer()
-    mux.start()
+    # Start the feed manager (this is async, so run in event loop)
+    try:
+        asyncio.run(feed_manager.start())
+    except KeyboardInterrupt:
+        logger.info("Feed manager stopped")
+    except Exception as e:
+        logger.error(f"Feed manager error: {e}")
 
 
 def run_inference_loop():
-    logger.info("Starting Inference Loop Process...")
-    # Event-driven ML Inference
-    # Reads 'live_ticks' stream, calculates features (Polars-based), runs meta-model, pushes to 'oms_signals'
-    redis_client = redis.Redis(host="localhost", port=6379, db=0)
-    logger.info("Inference worker connected to Redis. Monitoring live_ticks stream...")
+    """
+    Event-driven ML inference worker.
+    Wakes on each Redis tick, runs the full generate_live_predictions pipeline,
+    and results are written directly to the database by the prediction script.
+    Runs on a short sleep cycle when market is active rather than blocking on Redis.
+    """
+    logger.info("Starting Inference Loop Process (real ML pipeline)...")
+    import time as _time
 
-    last_id = "$"  # Listen only to new ticks
+    # Import here so the subprocess only loads what it needs
+    import sys, os
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+    try:
+        from scripts.generate_live_predictions import run as _run_predictions
+    except ImportError as e:
+        logger.error(f"Failed to import generate_live_predictions: {e}. Inference loop cannot start.")
+        return
+
+    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    logger.info("Inference worker connected to Redis. Waiting for ticks...")
+
+    last_id = "$"
     while True:
         try:
-            # Block waiting for ticks
-            stream_data = redis_client.xread({"live_ticks": last_id}, block=5000, count=100)
-            if not stream_data:
-                continue
+            # Block up to 60s for any new tick before triggering inference
+            stream_data = redis_client.xread({"live_ticks": last_id}, block=60000, count=1)
+            if stream_data:
+                for _stream_name, messages in stream_data:
+                    if messages:
+                        last_id = messages[-1][0].decode()
 
-            for _stream_name, messages in stream_data:
-                for message_id, message_body in messages:
-                    last_id = message_id.decode()
-                    # Event-driven trigger: Calculate features & run models
-                    # e.g., run_ensemble_inference(message_body)
-                    tick = {k.decode(): v.decode() for k, v in message_body.items()}
-                    logger.debug(
-                        f"Event Triggered: Tick received for {tick.get('symbol')}. Running ML..."
-                    )
+            # Run the full prediction pipeline (writes to DB directly)
+            logger.info("Inference trigger: running generate_live_predictions...")
+            _run_predictions()
+            logger.info("Inference cycle complete.")
 
-                    # Mock output signal
-                    signal = {
-                        "symbol": tick.get("symbol"),
-                        "ltp": float(tick.get("ltp", 0)),
-                        "timestamp": int(time.time()),
-                        "signal": "BUY",
-                        "probability": 0.58,
-                    }
-                    redis_client.xadd("oms_signals", signal, maxlen=10000)
         except Exception as e:
             logger.error(f"Error in inference worker: {e}")
-            time.sleep(2)
+            _time.sleep(5)
 
 
 def run_execution_loop():
@@ -171,9 +182,7 @@ def main():
     logger.info("Initializing Institutional Multiprocessing Orchestrator...")
 
     processes = [
-        multiprocessing.Process(target=run_angelone_feed, name="AngelOneFeed"),
-        multiprocessing.Process(target=run_upstox_feed, name="UpstoxFeed"),
-        multiprocessing.Process(target=run_multiplexer, name="Multiplexer"),
+        multiprocessing.Process(target=run_feed_manager, name="FeedManager"),
         multiprocessing.Process(target=run_inference_loop, name="InferenceEngine"),
         multiprocessing.Process(target=run_execution_loop, name="ExecutionOMS"),
     ]

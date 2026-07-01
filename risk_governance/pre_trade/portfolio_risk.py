@@ -52,6 +52,13 @@ class PortfolioRiskEngine:
         self.max_positions_per_sector = 2
         self.daily_loss_limit_pct = -0.02  # Halt if loss > 2% of capital
         self.max_var_limit_pct = 0.03  # 3% VaR limit
+        self.sector_map = SECTOR_MAP.copy()
+
+    def update_sector_map(self, new_mapping: dict[str, str]) -> None:
+        """
+        Dynamically update the sector mapping for concentration limits.
+        """
+        self.sector_map.update(new_mapping)
 
     def check_daily_loss_limit(self, current_day_pnl: float) -> bool:
         """
@@ -75,12 +82,12 @@ class PortfolioRiskEngine:
         if len(open_positions) >= self.max_open_positions:
             return False, f"Max open positions ({self.max_open_positions}) reached."
 
-        new_sector = SECTOR_MAP.get(new_symbol.split(".")[0], "Unknown")
+        new_sector = self.sector_map.get(new_symbol.split(".")[0], "Unknown")
 
         sector_count = 0
         for pos in open_positions:
             sym_clean = pos["symbol"].split(".")[0]
-            if SECTOR_MAP.get(sym_clean, "Unknown") == new_sector:
+            if self.sector_map.get(sym_clean, "Unknown") == new_sector:
                 sector_count += 1
 
         if sector_count >= self.max_positions_per_sector:

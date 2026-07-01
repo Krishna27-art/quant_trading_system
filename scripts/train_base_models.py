@@ -39,11 +39,8 @@ from utils.logger import get_logger
 
 logger = get_logger("train_base_models")
 
-DEFAULT_SYMBOLS = [
-    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK",
-    "INFY", "TATAMOTORS", "ITC", "SBIN",
-    "WIPRO", "AXISBANK", "KOTAKBANK", "LT",
-]
+from config.universe import NSE_UNIVERSE
+DEFAULT_SYMBOLS = [s["symbol"] for s in NSE_UNIVERSE]
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +223,7 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
     model.save(save_dir)
     logger.info(f"SWING ensemble saved → {save_dir}")
 
-    ModelRegistry().register("XGB_SWING_v1", "SWING", model)
+    ModelRegistry().register("ENSEMBLE_SWING_v1", "SWING", model)
 
 
 def train_intraday(symbols: list[str], model_dir: str) -> None:

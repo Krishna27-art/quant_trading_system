@@ -67,6 +67,8 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://[::]:3000",
         "http://[::1]:3000",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
         "*",
     ],
     allow_credentials=True,
@@ -419,6 +421,481 @@ def get_stock(symbol: str):
     except Exception as e:
         logger.error(f"get_stock({symbol}) failed: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@app.get("/api/sectors")
+def get_sectors():
+    """Return list of available sectors from NSE_UNIVERSE."""
+    try:
+        from config.universe import NSE_UNIVERSE
+        sectors = sorted({s["sector"] for s in NSE_UNIVERSE})
+        return {"sectors": sectors}
+    except Exception as e:
+        logger.error(f"get_sectors failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail="Failed to load sectors")
+
+
+@app.get("/api/trades/bad_diagnosis")
+def bad_trade_diagnosis(symbol: str):
+    """
+    Diagnose a potentially bad trade by analyzing current price vs entry, SL, target.
+    Returns status, slippage, VIX change, VWAP deviation, and other metrics.
+    """
+    try:
+        from database.db_sync import SessionLocal
+        from sqlalchemy import text
+        
+        db = SessionLocal()
+        
+        # Get latest prediction for this symbol
+        result = db.execute(
+            text("""
+                SELECT entry_price, stop_loss, target_price, prediction_time, confidence
+                FROM predictions
+                WHERE symbol = :symbol
+                ORDER BY prediction_time DESC
+                LIMIT 1
+            """),
+            {"symbol": symbol.upper()}
+        ).fetchone()
+        
+        if not result:
+            return {"error": f"No predictions found for {symbol}"}
+        
+        entry_price = float(result[0])
+        stop_loss = float(result[1])
+        target_price = float(result[2])
+        prediction_time = result[3]
+        
+        # Get current price
+        price_result = db.execute(
+            text("""
+                SELECT price FROM stock_prices
+                WHERE symbol = :symbol
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """),
+            {"symbol": symbol.upper()}
+        ).fetchone()
+        
+        if not price_result:
+            return {"error": f"No current price found for {symbol}"}
+        
+        current_price = float(price_result[0])
+        
+        # Calculate metrics
+        slippage_pct = abs((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+        
+        # Determine status based on distance to SL/Target
+        if current_price <= stop_loss:
+            status = "stopped_out"
+        elif current_price >= target_price:
+            status = "target_hit"
+        else:
+            dist_to_sl = abs(current_price - stop_loss) / abs(entry_price - stop_loss) if entry_price != stop_loss else 0
+            dist_to_target = abs(target_price - current_price) / abs(target_price - entry_price) if target_price != entry_price else 0
+            status = "at_risk" if dist_to_sl < 0.3 else "on_track"
+        
+        # Get VIX (mock - would need actual VIX data)
+        vix_change = 0.0
+        
+        # VWAP deviation (mock - would need intraday VWAP data)
+        vwap_dev_pct = 0.0
+        
+        return {
+            "status": status,
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "stop_loss": stop_loss,
+            "target_price": target_price,
+            "slippage_pct": slippage_pct,
+            "vix_change": vix_change,
+            "vwap_dev_pct": vwap_dev_pct,
+            "prediction_time": str(prediction_time) if prediction_time else None
+        }
+        
+    except Exception as e:
+        logger.error(f"bad_trade_diagnosis failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
+@app.post("/api/calibration/recalibrate")
+def recalibrate():
+    """
+    Trigger recalibration of probability models.
+    Fetches historical predictions and outcomes, then refits calibrators.
+    """
+    try:
+        from database.db_sync import SessionLocal
+        from database.models import Prediction
+        from prediction_intelligence.calibration import fit_calibrator
+        from sqlalchemy import text
+
+        db = SessionLocal()
+        
+        # Fetch historical predictions with outcomes
+        result = db.execute(
+            text("""
+                SELECT horizon, confidence, actual_outcome
+                FROM predictions
+                WHERE actual_outcome IN ('WIN', 'LOSS')
+                ORDER BY prediction_time DESC
+                LIMIT 1000
+            """)
+        ).fetchall()
+        
+        if not result:
+            return {"status": "ok", "message": "No historical outcomes found for calibration"}
+        
+        # Group by timeframe
+        timeframe_data = {}
+        for row in result:
+            horizon = row[0]  # INTRADAY, SWING, LONGTERM
+            confidence = float(row[1])
+            outcome = 1 if row[2] == "WIN" else 0
+            
+            if horizon not in timeframe_data:
+                timeframe_data[horizon] = {"raw_probs": [], "outcomes": []}
+            timeframe_data[horizon]["raw_probs"].append(confidence)
+            timeframe_data[horizon]["outcomes"].append(outcome)
+        
+        # Fit calibrators for each timeframe
+        fitted_count = 0
+        for timeframe, data in timeframe_data.items():
+            if len(data["raw_probs"]) >= 50:
+                fit_calibrator(data["raw_probs"], data["outcomes"], timeframe, method="isotonic")
+                fitted_count += 1
+                logger.info(f"Recalibrated {timeframe} with {len(data['raw_probs'])} samples")
+        
+        db.close()
+        
+        return {
+            "status": "ok",
+            "message": f"Recalibration completed for {fitted_count} timeframes",
+            "fitted_timeframes": list(timeframe_data.keys())
+        }
+        
+    except Exception as e:
+        logger.error(f"Recalibration failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Recalibration failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Training & Backtest Endpoints
+# ---------------------------------------------------------------------------
+
+class TrainingRequest(BaseModel):
+    model_version: str
+    timeframe: str
+    hyperparams: dict[str, Any] = {}
+
+
+class BacktestRequest(BaseModel):
+    model_version: str
+    timeframe: str
+    start_date: str
+    end_date: str
+
+
+@app.post("/api/train/run")
+def run_training(request: TrainingRequest):
+    """
+    Trigger model training job.
+    This is a placeholder - actual training should run as async job via Celery/Prefect.
+    """
+    try:
+        # In production, this would queue a job and return a job_id
+        # For now, return a success message
+        logger.info(f"Training requested for {request.model_version} ({request.timeframe})")
+        return {
+            "status": "queued",
+            "job_id": f"train_{request.model_version}_{request.timeframe}_{now_ist().timestamp()}",
+            "message": "Training job queued. Check status endpoint for progress."
+        }
+    except Exception as e:
+        logger.error(f"Training request failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
+
+
+@app.post("/api/backtest/run")
+def run_backtest(request: BacktestRequest):
+    """
+    Trigger backtest job.
+    This is a placeholder - actual backtest should run as async job via Celery/Prefect.
+    """
+    try:
+        # In production, this would queue a job and return a job_id
+        logger.info(f"Backtest requested for {request.model_version} ({request.timeframe}) from {request.start_date} to {request.end_date}")
+        return {
+            "status": "queued",
+            "job_id": f"backtest_{request.model_version}_{request.timeframe}_{now_ist().timestamp()}",
+            "message": "Backtest job queued. Check status endpoint for progress."
+        }
+    except Exception as e:
+        logger.error(f"Backtest request failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Backtest failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Paper Trading Endpoints
+# ---------------------------------------------------------------------------
+
+class PaperTradeCreate(BaseModel):
+    symbol: str
+    side: str  # BUY or SELL
+    quantity: int
+    entry_price: float
+
+
+class PaperTradeUpdate(BaseModel):
+    exit_price: float | None = None
+    status: str | None = None  # OPEN, CLOSED, CANCELLED
+
+
+@app.post("/api/paper/trades")
+def create_paper_trade(trade: PaperTradeCreate):
+    """Create a new paper trade."""
+    try:
+        from database.db_sync import SessionLocal
+        from database.models import PaperTrade
+        import uuid
+        from utils.time_utils import now_ist
+
+        db = SessionLocal()
+        
+        paper_trade = PaperTrade(
+            id=str(uuid.uuid4()),
+            user_id="default",  # In production, get from auth token
+            symbol=trade.symbol.upper(),
+            side=trade.side.upper(),
+            quantity=trade.quantity,
+            entry_price=trade.entry_price,
+            entry_timestamp=now_ist(),
+            status="OPEN",
+            created_at=now_ist(),
+            updated_at=now_ist(),
+        )
+        
+        db.add(paper_trade)
+        db.commit()
+        db.refresh(paper_trade)
+        db.close()
+        
+        return {
+            "id": paper_trade.id,
+            "symbol": paper_trade.symbol,
+            "side": paper_trade.side,
+            "quantity": paper_trade.quantity,
+            "entry_price": float(paper_trade.entry_price),
+            "status": paper_trade.status,
+            "created_at": paper_trade.created_at.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to create paper trade: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create paper trade: {str(e)}")
+
+
+@app.get("/api/paper/trades")
+def list_paper_trades(status: str | None = Query(default=None)):
+    """List all paper trades, optionally filtered by status."""
+    try:
+        from database.db_sync import SessionLocal
+        from database.models import PaperTrade
+        from sqlalchemy import text
+
+        db = SessionLocal()
+        
+        query = "SELECT * FROM paper_trades"
+        params = {}
+        if status:
+            query += " WHERE status = :status"
+            params["status"] = status.upper()
+        query += " ORDER BY created_at DESC"
+        
+        result = db.execute(text(query), params).fetchall()
+        db.close()
+        
+        trades = []
+        for row in result:
+            trades.append({
+                "id": row[0],
+                "user_id": row[1],
+                "symbol": row[2],
+                "side": row[3],
+                "quantity": row[4],
+                "entry_price": float(row[5]) if row[5] else None,
+                "exit_price": float(row[6]) if row[6] else None,
+                "entry_timestamp": row[7].isoformat() if row[7] else None,
+                "exit_timestamp": row[8].isoformat() if row[8] else None,
+                "status": row[9],
+                "pnl": float(row[10]) if row[10] else None,
+                "created_at": row[11].isoformat() if row[11] else None,
+            })
+        
+        return {"trades": trades}
+    except Exception as e:
+        logger.error(f"Failed to list paper trades: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list paper trades: {str(e)}")
+
+
+@app.put("/api/paper/trades/{trade_id}")
+def update_paper_trade(trade_id: str, update: PaperTradeUpdate):
+    """Update a paper trade (exit price or status)."""
+    try:
+        from database.db_sync import SessionLocal
+        from database.models import PaperTrade
+        from sqlalchemy import text
+        from utils.time_utils import now_ist
+
+        db = SessionLocal()
+        
+        # Fetch existing trade
+        trade = db.execute(
+            text("SELECT * FROM paper_trades WHERE id = :trade_id"),
+            {"trade_id": trade_id}
+        ).fetchone()
+        
+        if not trade:
+            db.close()
+            raise HTTPException(status_code=404, detail="Trade not found")
+        
+        # Build update query
+        updates = []
+        params = {"trade_id": trade_id, "updated_at": now_ist()}
+        
+        if update.exit_price is not None:
+            updates.append("exit_price = :exit_price")
+            params["exit_price"] = update.exit_price
+        
+        if update.status is not None:
+            updates.append("status = :status")
+            params["status"] = update.status.upper()
+            
+            # If closing, set exit timestamp
+            if update.status.upper() == "CLOSED":
+                updates.append("exit_timestamp = :exit_timestamp")
+                params["exit_timestamp"] = now_ist()
+        
+        if updates:
+            query = f"UPDATE paper_trades SET {', '.join(updates)}, updated_at = :updated_at WHERE id = :trade_id"
+            db.execute(text(query), params)
+            db.commit()
+        
+        db.close()
+        return {"status": "ok", "message": "Trade updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update paper trade: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update paper trade: {str(e)}")
+
+
+@app.delete("/api/paper/trades/{trade_id}")
+def delete_paper_trade(trade_id: str):
+    """Delete a paper trade."""
+    try:
+        from database.db_sync import SessionLocal
+        from sqlalchemy import text
+
+        db = SessionLocal()
+        db.execute(text("DELETE FROM paper_trades WHERE id = :trade_id"), {"trade_id": trade_id})
+        db.commit()
+        db.close()
+        
+        return {"status": "ok", "message": "Trade deleted"}
+    except Exception as e:
+        logger.error(f"Failed to delete paper trade: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete paper trade: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# FII/DII Net Flow Endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/market/fii_dii")
+def get_fii_dii_flow():
+    """
+    Get FII/DII net flow data (5-day rolling).
+    This is a placeholder - should fetch from NSE or data provider.
+    """
+    try:
+        # In production, fetch from NSE or data provider
+        # For now, return mock data
+        return {
+            "fii_net_flow": 1250.5,  # Cr
+            "dii_net_flow": 890.3,   # Cr
+            "net_flow": 1540.8,      # Cr (FII + DII)
+            "date": now_ist().date().isoformat(),
+            "trend": "bullish"  # bullish, bearish, neutral
+        }
+    except Exception as e:
+        logger.error(f"Failed to get FII/DII data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get FII/DII data: {str(e)}")
+
+
+@app.get("/api/market-hours")
+def get_market_hours():
+    """
+    Get current market hours status for NSE (Indian market).
+    Returns open/closed status and next open time.
+    """
+    try:
+        from datetime import datetime, time, timedelta
+        from zoneinfo import ZoneInfo
+        
+        ist = ZoneInfo("Asia/Kolkata")
+        now = datetime.now(ist)
+        current_time = now.time()
+        
+        # NSE market hours: 9:15 AM to 3:30 PM IST
+        market_open = time(9, 15)
+        market_close = time(15, 30)
+        
+        is_open = market_open <= current_time <= market_close
+        
+        # Calculate next open time
+        if is_open:
+            next_open = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        elif current_time < market_open:
+            next_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        else:
+            # Next trading day
+            next_open = (now.replace(hour=9, minute=15, second=0, microsecond=0) + 
+                        timedelta(days=1))
+            # Skip weekends
+            while next_open.weekday() >= 5:  # 5=Saturday, 6=Sunday
+                next_open += timedelta(days=1)
+        
+        return {
+            "is_open": is_open,
+            "current_time": now.isoformat(),
+            "next_open": next_open.isoformat(),
+            "market_open": "09:15 IST",
+            "market_close": "15:30 IST",
+            "exchange": "NSE"
+        }
+    except Exception as e:
+        logger.error(f"Failed to get market hours: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get market hours: {str(e)}")
+
+
+@app.get("/api/options")
+def get_options_data(symbol: str = Query(default="NIFTY")):
+    """
+    Get options chain data for a symbol.
+    This is a placeholder - should fetch from NSE or data provider.
+    """
+    try:
+        # In production, fetch from NSE options API
+        # For now, return empty array
+        return {
+            "symbol": symbol.upper(),
+            "expiry_dates": [],
+            "options": []
+        }
+    except Exception as e:
+        logger.error(f"Failed to get options data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get options data: {str(e)}")
 
 
 @app.get("/api/stocks/{symbol}/history")

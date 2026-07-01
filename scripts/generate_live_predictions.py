@@ -61,7 +61,9 @@ MODEL_DIR = Path(os.getenv("MODEL_DIR", "models/saved"))
 from config.universe import NSE_UNIVERSE
 SYMBOLS = [s["symbol"] for s in NSE_UNIVERSE]
 
-# Timeframe config: yfinance period/interval, ATR window, target/SL multiples
+# Timeframe config: yfinance period/interval, ATR window, target/SL multipliers
+# target_multiplier and sl_multiplier allow independent scaling of target and stop-loss
+# from ATR, breaking the fixed 2:1 ratio constraint
 TIMEFRAME_CONFIG = {
     "INTRADAY": {
         "period": "5d",
@@ -70,6 +72,8 @@ TIMEFRAME_CONFIG = {
         "atr_window": 14,
         "target_pct": 0.015,
         "sl_pct": 0.0075,
+        "target_multiplier": 2.5,  # Target = ATR * 2.5 (was hardcoded 2.0)
+        "sl_multiplier": 1.0,    # SL = ATR * 1.0
         "model_version_key": "INTRADAY_MODEL_VERSION",
         "default_version": "LGBM_INTRADAY_v1",
     },
@@ -80,6 +84,8 @@ TIMEFRAME_CONFIG = {
         "atr_window": 14,
         "target_pct": 0.03,
         "sl_pct": 0.015,
+        "target_multiplier": 3.0,  # Target = ATR * 3.0 (was hardcoded 2.0)
+        "sl_multiplier": 1.0,    # SL = ATR * 1.0
         "model_version_key": "SWING_MODEL_VERSION",
         # ENSEMBLE_ prefix is required: ModelRegistry uses it to detect EnsembleModel
         # vs BaseLogistic (joblib). train_base_models.py saves to XGB_SWING_v1/ dir but
@@ -93,6 +99,8 @@ TIMEFRAME_CONFIG = {
         "atr_window": 10,
         "target_pct": 0.20,
         "sl_pct": 0.10,
+        "target_multiplier": 2.5,  # Target = ATR * 2.5 (was hardcoded 2.0)
+        "sl_multiplier": 1.0,    # SL = ATR * 1.0
         "model_version_key": "LONGTERM_MODEL_VERSION",
         "default_version": "LOGREG_LONGTERM_v1",
     },
@@ -280,17 +288,31 @@ def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[
 
 
 def compute_sl_target(entry: float, direction: str, atr: float,
-                       base_target_pct: float, base_sl_pct: float) -> tuple[float, float]:
+                       base_target_pct: float, base_sl_pct: float,
+                       target_multiplier: float = 2.0,
+                       sl_multiplier: float = 1.0) -> tuple[float, float]:
     """
     ATR-scaled stop-loss and target.
     Uses ATR if available and reasonable, else falls back to fixed percentage.
+    
+    Args:
+        entry: Entry price
+        direction: "BUY" or "SELL"
+        atr: Average True Range value
+        base_target_pct: Fallback target percentage if ATR unavailable
+        base_sl_pct: Fallback stop-loss percentage if ATR unavailable
+        target_multiplier: Multiplier for ATR when computing target distance
+        sl_multiplier: Multiplier for ATR when computing stop-loss distance
+    
+    Returns:
+        (stop_loss, target_price) tuple
     """
     atr_pct = atr / entry if entry > 0 and not np.isnan(atr) else 0.0
 
     # Use ATR if it's within a sensible range (0.1% - 5%)
     if 0.001 < atr_pct < 0.05:
-        sl_distance = max(atr_pct * 1.0, base_sl_pct)
-        target_distance = max(atr_pct * 2.0, base_target_pct)
+        sl_distance = max(atr_pct * sl_multiplier, base_sl_pct)
+        target_distance = max(atr_pct * target_multiplier, base_target_pct)
     else:
         sl_distance = base_sl_pct
         target_distance = base_target_pct
@@ -419,7 +441,9 @@ def generate_predictions_for_timeframe(
 
             sl, target = compute_sl_target(
                 entry, direction, atr_val,
-                config["target_pct"], config["sl_pct"]
+                config["target_pct"], config["sl_pct"],
+                target_multiplier=config.get("target_multiplier", 2.0),
+                sl_multiplier=config.get("sl_multiplier", 1.0)
             )
 
             feat_summary = {

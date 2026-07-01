@@ -58,3 +58,22 @@ class IndexTick(Base):
     name = Column(String(50), nullable=False)
     value = Column(Numeric(12, 2), nullable=False)
     change = Column(Numeric(5, 2))
+
+
+class PaperTrade(Base):
+    __tablename__ = "paper_trades"
+
+    id = Column(String(50), primary_key=True)
+    user_id = Column(String(50), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    side = Column(String(10), nullable=False)  # BUY or SELL
+    quantity = Column(Integer, nullable=False)
+    entry_price = Column(Numeric(12, 2), nullable=False)
+    exit_price = Column(Numeric(12, 2))
+    entry_timestamp = Column(DateTime, nullable=False)
+    exit_timestamp = Column(DateTime)
+    status = Column(String(20), default="OPEN")  # OPEN, CLOSED, CANCELLED
+    strategy_id = Column(String(50))  # Model/strategy that generated the trade
+    pnl = Column(Numeric(12, 2))
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime)

@@ -327,6 +327,10 @@ tr:hover { background: var(--bg-widget); }
         <div class="panel">
           <div class="panel-header">MARKET REGIME</div>
           <div class="panel-body">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-size:10px; color:var(--c-muted);">SESSION STATUS</span>
+              <span id="cockpit-market-status" style="font-size:10px; font-weight:bold;">--</span>
+            </div>
             <div>
               <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                 <span>HMM Regime State</span>
@@ -414,8 +418,11 @@ tr:hover { background: var(--bg-widget); }
         <div class="panel">
           <div class="panel-header">SYMBOLS LIST</div>
           <div class="panel-body" style="padding:0;">
-            <div style="padding:8px; border-bottom:1px solid var(--border);">
-              <input type="text" id="market-search" placeholder="Search symbol..." style="width:100%;">
+            <div style="padding:8px; border-bottom:1px solid var(--border); display:flex; gap:8px;">
+              <select id="sector-filter" style="flex:1; background:var(--bg-widget); border:1px solid var(--border); color:var(--c-text); padding:4px; border-radius:var(--r);">
+                <option value="">All Sectors</option>
+              </select>
+              <input type="text" id="market-search" placeholder="Search symbol..." style="flex:1;">
             </div>
             <table id="markets-grid-table">
               <thead>
@@ -437,7 +444,15 @@ tr:hover { background: var(--bg-widget); }
 
         <!-- Center: Confluence Charts & Details -->
         <div class="panel">
-          <div class="panel-header" id="market-details-title">SYMBOL CONFLUENCE</div>
+          <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span id="market-details-title">SYMBOL CONFLUENCE</span>
+            <select id="chart-timeframe" style="background:var(--bg-widget); border:1px solid var(--border); color:var(--c-text); padding:4px; border-radius:var(--r); font-size:10px;">
+              <option value="15m">15 Min</option>
+              <option value="1h">1 Hour</option>
+              <option value="1d" selected>Daily</option>
+              <option value="1w">Weekly</option>
+            </select>
+          </div>
           <div class="panel-body">
             <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; height: 180px; min-height:150px;">
               <div style="border:1px solid var(--border); background:var(--bg-widget); padding:4px; display:flex; flex-direction:column;">
@@ -931,7 +946,7 @@ const DataStore = {
   indices: [],         // real indices values
   sectors: [],         // real sector performance values
   history: {},         // symbol -> historical OHLCV/indicator payload
-  activeStock: "RELIANCE",
+  activeStock: null,
   activeView: "cockpit",
   sortField: "symbol",
   sortDir: "asc",
@@ -971,7 +986,7 @@ const DataStore = {
       const m = String(istTime.getMinutes()).padStart(2, '0');
       document.getElementById('sess-clock').textContent = `IST ${h}:${m}`;
       
-      const isOpen = istTime.getHours() >= 9 && (istTime.getHours() < 15 || (istTime.getHours() === 15 && istTime.getMinutes() < 30));
+      const isOpen = (istTime.getHours() > 9 || (istTime.getHours() === 9 && istTime.getMinutes() >= 15)) && (istTime.getHours() < 15 || (istTime.getHours() === 15 && istTime.getMinutes() < 30));
       const mStatus = document.getElementById('sess-market-status');
       if (mStatus) {
         mStatus.textContent = isOpen ? '● LIVE' : '○ CLOSED';
@@ -1121,21 +1136,21 @@ function initMarketsCharts() {
   const ctx15 = document.getElementById('chart-confluence-15m').getContext('2d');
   charts.conf15 = new Chart(ctx15, {
     type: 'line',
-    data: { labels: Array(15).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1 }] },
+    data: { labels: Array(15).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1, segment: { borderColor: ctx => ctx.p1.parsed.y > ctx.p0.parsed.y ? '#10b981' : '#f43f5e' } }] },
     options: options
   });
 
   const ctxDaily = document.getElementById('chart-confluence-daily').getContext('2d');
   charts.confDaily = new Chart(ctxDaily, {
     type: 'line',
-    data: { labels: Array(60).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1 }] },
+    data: { labels: Array(60).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1, segment: { borderColor: ctx => ctx.p1.parsed.y > ctx.p0.parsed.y ? '#10b981' : '#f43f5e' } }] },
     options: options
   });
 
   const ctxWeekly = document.getElementById('chart-confluence-weekly').getContext('2d');
   charts.confWeekly = new Chart(ctxWeekly, {
     type: 'line',
-    data: { labels: Array(180).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1 }] },
+    data: { labels: Array(180).fill(''), datasets: [{ data: [], borderColor: '#10b981', borderWidth: 1, segment: { borderColor: ctx => ctx.p1.parsed.y > ctx.p0.parsed.y ? '#10b981' : '#f43f5e' } }] },
     options: options
   });
 
@@ -1281,6 +1296,17 @@ function renderCockpitSignals() {
   const body = document.getElementById('cockpit-signals-body');
   const list = DataStore.predictions || [];
   
+  // Update market status in cockpit
+  const now = new Date();
+  const istStr = now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"});
+  const istTime = new Date(istStr);
+  const isOpen = (istTime.getHours() > 9 || (istTime.getHours() === 9 && istTime.getMinutes() >= 15)) && (istTime.getHours() < 15 || (istTime.getHours() === 15 && istTime.getMinutes() < 30));
+  const cockpitStatus = document.getElementById('cockpit-market-status');
+  if (cockpitStatus) {
+    cockpitStatus.textContent = isOpen ? '● LIVE' : '○ CLOSED';
+    cockpitStatus.className = isOpen ? 'val-up' : 'val-dn';
+  }
+  
   if (!list.length) {
     body.innerHTML = `<tr><td colspan="8" style="text-align:center; color:var(--c-muted); padding:12px;">No active signals in database. Run prediction scripts first.</td></tr>`;
     return;
@@ -1338,8 +1364,15 @@ function renderMarketsGrid() {
   const body = document.getElementById('markets-grid-body');
   const searchInput = document.getElementById('market-search');
   const searchVal = searchInput ? searchInput.value.toLowerCase() : "";
+  const sectorFilter = document.getElementById('sector-filter');
+  const sectorVal = sectorFilter ? sectorFilter.value : "";
   
   let stocks = [...(DataStore.stocksList || [])];
+  
+  // Filter by sector
+  if (sectorVal) {
+    stocks = stocks.filter(s => s.sector === sectorVal);
+  }
   
   // Filter by search
   if (searchVal) {
@@ -1460,7 +1493,40 @@ function selectStock(sym) {
   DataStore.activeStock = sym;
   renderMarketsGrid();
   renderMarketsDetail();
-  fetchHistoricalDataAndRender(sym);
+  
+  // Fetch history for selected timeframe
+  const timeframeSelector = document.getElementById('chart-timeframe');
+  const timeframe = timeframeSelector ? timeframeSelector.value : '1d';
+  fetchStockHistory(sym, timeframe);
+}
+
+function fetchStockHistory(symbol, timeframe = '1d') {
+  if (!symbol) return;
+  
+  // Map timeframe to API days parameter
+  const timeframeToDays = {
+    '15m': 5,
+    '1h': 30,
+    '1d': 180,
+    '1w': 365
+  };
+  
+  const days = timeframeToDays[timeframe] || 180;
+  
+  fetch(`/api/stocks/${symbol}/history?days=${days}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.length) {
+        DataStore.history[symbol] = {
+          ohlcv: data,
+          indicators: {},
+          levels: {}
+        };
+        // Update charts if they exist
+        if (charts.conf15) updateMarketsCharts(symbol);
+      }
+    })
+    .catch(err => console.error('Failed to fetch stock history:', err));
 }
 
 async function fetchHistoricalDataAndRender(sym) {
@@ -1566,20 +1632,62 @@ function renderSignalsJournal() {
 
 function loadBadTradeDiagnosis(symbol) {
   const container = document.getElementById('bad-trade-anatomy-body');
-  container.innerHTML = `
-    <div style="display:flex; flex-direction:column; gap:6px;">
-      <div style="font-weight:bold; font-size:11px; border-bottom:1px solid var(--border); padding-bottom:4px;">
-        DIAGNOSING: ${symbol} (SL HIT)
-      </div>
-      <div><strong>Execution Drift:</strong> Price executed ₹2.40 slippage away from signal boundary.</div>
-      <div><strong>Structural regime shift:</strong> VIX expanded from 13.5 to 16.8 during entry cycle.</div>
-      <div><strong>Feature Contributions:</strong></div>
-      <table style="font-size:9.5px;">
-        <tr><td>VWAP Dev</td><td>+1.2% (Overstretched)</td><td class="val-dn">HIGH RISK</td></tr>
-        <tr><td>Sector momentum</td><td>Negatively diverging</td><td class="val-dn">MISMATCH</td></tr>
-      </table>
-    </div>
-  `;
+  container.innerHTML = `<div style="text-align:center; padding:12px; color:var(--c-muted);">Loading diagnosis...</div>`;
+  
+  fetch(`/api/trades/bad_diagnosis?symbol=${symbol}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        container.innerHTML = `<div style="text-align:center; padding:12px; color:var(--c-red);">${data.error}</div>`;
+        return;
+      }
+      
+      const statusClass = data.status === 'at_risk' ? 'val-dn' : data.status === 'on_track' ? 'val-up' : 'val-amber';
+      const vixClass = data.vix_change > 0 ? 'val-dn' : data.vix_change < 0 ? 'val-up' : '';
+      const vwapClass = Math.abs(data.vwap_dev_pct) > 1 ? 'val-dn' : '';
+      
+      container.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          <div style="font-weight:bold; font-size:11px; border-bottom:1px solid var(--border); padding-bottom:4px;">
+            DIAGNOSING: ${symbol} <span class="${statusClass}" style="margin-left:auto;">${data.status.toUpperCase()}</span>
+          </div>
+          <div><strong>Entry Price:</strong> ₹${data.entry_price.toFixed(2)}</div>
+          <div><strong>Current Price:</strong> ₹${data.current_price.toFixed(2)}</div>
+          <div><strong>Stop Loss:</strong> ₹${data.stop_loss.toFixed(2)}</div>
+          <div><strong>Target:</strong> ₹${data.target_price.toFixed(2)}</div>
+          <div><strong>Execution Drift:</strong> ${data.slippage_pct.toFixed(2)}% slippage from entry</div>
+          <div><strong>VIX Change:</strong> <span class="${vixClass}">${data.vix_change > 0 ? '+' : ''}${data.vix_change.toFixed(2)}</span> points</div>
+          <div><strong>VWAP Deviation:</strong> <span class="${vwapClass}">${data.vwap_dev_pct > 0 ? '+' : ''}${data.vwap_dev_pct.toFixed(2)}%</span> ${Math.abs(data.vwap_dev_pct) > 1 ? '(Overstretched)' : '(Normal)'}</div>
+          <div style="font-size:9px; color:var(--c-muted); margin-top:4px;">Prediction time: ${data.prediction_time || 'N/A'}</div>
+        </div>
+      `;
+    })
+    .catch(err => {
+      container.innerHTML = `<div style="text-align:center; padding:12px; color:var(--c-red);">Failed to load diagnosis: ${err.message}</div>`;
+    });
+}
+
+function triggerIsotonicRecalibration() {
+  const btn = event.target;
+  const originalText = btn.textContent;
+  btn.textContent = 'RECALIBRATING...';
+  btn.disabled = true;
+  
+  fetch('/api/calibration/recalibrate', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      btn.textContent = originalText;
+      btn.disabled = false;
+      alert(data.message);
+      if (data.status === 'ok') {
+        fetchCalibrationDataAndRender();
+      }
+    })
+    .catch(err => {
+      btn.textContent = originalText;
+      btn.disabled = false;
+      alert('Recalibration failed: ' + err.message);
+    });
 }
 
 function runBacktestSimulation() {
@@ -1774,6 +1882,36 @@ document.addEventListener("DOMContentLoaded", () => {
   if (searchBox) {
     searchBox.addEventListener('keyup', () => {
       renderMarketsGrid();
+    });
+  }
+  
+  // Setup sector filter
+  const sectorFilter = document.getElementById('sector-filter');
+  if (sectorFilter) {
+    fetch('/api/sectors')
+      .then(r => r.json())
+      .then(data => {
+        data.sectors.forEach(sector => {
+          const option = document.createElement('option');
+          option.value = sector;
+          option.textContent = sector;
+          sectorFilter.appendChild(option);
+        });
+      })
+      .catch(err => console.error('Failed to load sectors:', err));
+    
+    sectorFilter.addEventListener('change', () => {
+      renderMarketsGrid();
+    });
+  }
+  
+  // Setup timeframe selector for markets view
+  const timeframeSelector = document.getElementById('chart-timeframe');
+  if (timeframeSelector) {
+    timeframeSelector.addEventListener('change', () => {
+      if (DataStore.activeStock) {
+        fetchStockHistory(DataStore.activeStock, timeframeSelector.value);
+      }
     });
   }
   

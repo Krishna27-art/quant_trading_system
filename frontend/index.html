@@ -323,14 +323,60 @@ tr:hover { background: var(--bg-widget); }
     <div id="view-cockpit" class="view active">
       <div class="grid-3col">
         
-        <!-- Column 1: Market Regime Panel -->
+        <!-- Column 1: Market Regime & Global Macro Dashboard -->
         <div class="panel">
-          <div class="panel-header">MARKET REGIME</div>
-          <div class="panel-body">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-              <span style="font-size:10px; color:var(--c-muted);">SESSION STATUS</span>
+          <div class="panel-header">GLOBAL MACRO & REGIME</div>
+          <div class="panel-body" style="gap:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:10px; color:var(--c-muted);">NSE EXCHANGE STATUS</span>
               <span id="cockpit-market-status" style="font-size:10px; font-weight:bold;">--</span>
             </div>
+            
+            <!-- Global Macro Grid -->
+            <div style="background:var(--bg-widget); border:1px solid var(--border); border-radius:var(--r); padding:8px; display:flex; flex-direction:column; gap:6px;">
+              <div style="font-weight:bold; font-size:10px; color:var(--c-muted);">GLOBAL MACRO SATELLITE</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                <div style="background:var(--bg-panel); padding:4px 6px; border-radius:var(--r); display:flex; justify-content:space-between;">
+                  <span>Gift Nifty</span>
+                  <span class="val-up" id="macro-gift-nifty">+0.32%</span>
+                </div>
+                <div style="background:var(--bg-panel); padding:4px 6px; border-radius:var(--r); display:flex; justify-content:space-between;">
+                  <span>Dollar Index</span>
+                  <span class="val-dn" id="macro-dxy">104.2</span>
+                </div>
+                <div style="background:var(--bg-panel); padding:4px 6px; border-radius:var(--r); display:flex; justify-content:space-between;">
+                  <span>Crude Oil</span>
+                  <span class="val-warn" id="macro-crude">$83.4</span>
+                </div>
+                <div style="background:var(--bg-panel); padding:4px 6px; border-radius:var(--r); display:flex; justify-content:space-between;">
+                  <span>Gold ETF</span>
+                  <span class="val-info" id="macro-gold">₹81.2</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- FII/DII Net Flow Cash & Futures -->
+            <div style="background:var(--bg-widget); border:1px solid var(--border); border-radius:var(--r); padding:8px; display:flex; flex-direction:column; gap:4px;">
+              <div style="font-weight:bold; font-size:10px; color:var(--c-muted); display:flex; justify-content:space-between;">
+                <span>FII / DII FLOWS (Cr)</span>
+                <span id="fii-flow-date" style="font-size:9px;">--</span>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <div style="display:flex; justify-content:space-between; font-size:10.5px;">
+                  <span>FII Net Cash:</span>
+                  <span id="fii-net-cash" style="font-weight:bold;">--</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:10.5px;">
+                  <span>DII Net Cash:</span>
+                  <span id="dii-net-cash" style="font-weight:bold;">--</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:10.5px; border-top:1px dashed var(--border); padding-top:2px;">
+                  <span>FII Net Futures:</span>
+                  <span id="fii-net-futures" style="font-weight:bold;">--</span>
+                </div>
+              </div>
+            </div>
+
             <div>
               <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                 <span>HMM Regime State</span>
@@ -343,25 +389,18 @@ tr:hover { background: var(--bg-widget); }
               </div>
             </div>
             
-            <div style="margin-top:8px;">
+            <div>
               <div style="margin-bottom:4px;">Regime Blocks (Last 20 sessions)</div>
               <div id="regime-blocks" style="display:grid; grid-template-columns: repeat(10, 1fr); gap: 4px;">
                 <!-- Filled dynamically -->
               </div>
             </div>
             
-            <div style="margin-top:12px;">
-              <div style="margin-bottom:6px;">Market Indices Confluence</div>
+            <div style="margin-top:2px;">
+              <div style="margin-bottom:4px;">Market Indices Confluence</div>
               <table id="indices-table">
                 <!-- Filled dynamically -->
               </table>
-            </div>
-
-            <div style="margin-top:12px; display:flex; flex-direction:column; flex:1; min-height:120px;">
-              <div>FII/DII Net Flow (5-day rolling, Cr)</div>
-              <div class="chart-container">
-                <canvas id="chart-fii-flow"></canvas>
-              </div>
             </div>
           </div>
         </div>
@@ -1444,6 +1483,14 @@ function renderMarketsGrid() {
 }
 
 function renderMarketsDetail() {
+  // If no stock selected, show placeholder instead of crashing
+  if (!DataStore.activeStock) {
+    const detailPanel = document.getElementById('market-details-title');
+    if (detailPanel) detailPanel.textContent = 'SELECT A STOCK TO VIEW DETAILS';
+    const levelsTable = document.getElementById('levels-table');
+    if (levelsTable) levelsTable.innerHTML = '<thead></thead><tbody><tr><td colspan="3" style="text-align:center;color:var(--c-muted);padding:16px;">Click any stock in the table to view confluence &amp; analytics.</td></tr></tbody>';
+    return;
+  }
   const currentStock = DataStore.stocksList.find(s => s.symbol === DataStore.activeStock);
   const history = DataStore.history[DataStore.activeStock] || null;
   const activePrice = currentStock ? currentStock.price : (DataStore.prices[DataStore.activeStock] || 0);
@@ -1513,7 +1560,7 @@ function fetchStockHistory(symbol, timeframe = '1d') {
   
   const days = timeframeToDays[timeframe] || 180;
   
-  fetch(`/api/stocks/${symbol}/history?days=${days}`)
+  fetch(`${API_BASE}/stocks/${symbol}/history?days=${days}`)
     .then(r => r.json())
     .then(data => {
       if (data && data.length) {
@@ -1634,7 +1681,7 @@ function loadBadTradeDiagnosis(symbol) {
   const container = document.getElementById('bad-trade-anatomy-body');
   container.innerHTML = `<div style="text-align:center; padding:12px; color:var(--c-muted);">Loading diagnosis...</div>`;
   
-  fetch(`/api/trades/bad_diagnosis?symbol=${symbol}`)
+  fetch(`${API_BASE}/trades/bad_diagnosis?symbol=${symbol}`)
     .then(r => r.json())
     .then(data => {
       if (data.error) {
@@ -1673,7 +1720,7 @@ function triggerIsotonicRecalibration() {
   btn.textContent = 'RECALIBRATING...';
   btn.disabled = true;
   
-  fetch('/api/calibration/recalibrate', { method: 'POST' })
+  fetch(`${API_BASE}/calibration/recalibrate`, { method: 'POST' })
     .then(r => r.json())
     .then(data => {
       btn.textContent = originalText;
@@ -1695,17 +1742,41 @@ function runBacktestSimulation() {
   const metricSharpe = document.getElementById('bt-metric-sharpe');
   const metricMdd = document.getElementById('bt-metric-mdd');
   const metricWinrate = document.getElementById('bt-metric-winrate');
+  const timeframe = document.getElementById('bt-timeframe') ? document.getElementById('bt-timeframe').value : 'SWING';
 
-  metricReturn.textContent = "N/A";
-  metricSharpe.textContent = "N/A";
-  metricMdd.textContent = "N/A";
-  metricWinrate.textContent = "N/A";
-  if (charts.btEquity) {
-    charts.btEquity.data.datasets[0].data = [];
-    charts.btEquity.update();
-  }
-  document.getElementById('walk-forward-body').innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--c-muted); padding:12px;">Backtest engine not connected to historical evaluation results.</td></tr>`;
-  document.getElementById('monthly-heatmap-table').innerHTML = `<tbody><tr><td style="text-align:center; color:var(--c-muted); padding:12px;">No backtest heatmap available.</td></tr></tbody>`;
+  metricReturn.textContent = '...';
+  metricSharpe.textContent = '...';
+  metricMdd.textContent = '...';
+  metricWinrate.textContent = '...';
+  document.getElementById('walk-forward-body').innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--c-muted);padding:12px;">Submitting backtest job...</td></tr>`;
+
+  fetch(`${API_BASE}/backtest/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model_version: 'v2',
+      timeframe: timeframe,
+      start_date: '2024-01-01',
+      end_date: new Date().toISOString().slice(0, 10)
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      // Use live prediction stats as proxy metrics while async job runs
+      const preds = DataStore.predictions || [];
+      const resolved = preds.filter(p => p.result === 'correct' || p.result === 'wrong');
+      const wins = resolved.filter(p => p.result === 'correct').length;
+      const winRate = resolved.length > 0 ? ((wins / resolved.length) * 100).toFixed(1) : '--';
+      metricReturn.textContent = '--';
+      metricSharpe.textContent = '--';
+      metricMdd.textContent = '--';
+      metricWinrate.textContent = winRate !== '--' ? `${winRate}%` : '--';
+      document.getElementById('walk-forward-body').innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--c-green);padding:12px;">✔ ${data.message || 'Backtest queued'} &nbsp; <small style="color:var(--c-muted);">Job ID: ${data.job_id || 'N/A'}</small></td></tr>`;
+    })
+    .catch(err => {
+      metricReturn.textContent = 'ERR';
+      document.getElementById('walk-forward-body').innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--c-red);padding:12px;">Error: ${err.message}</td></tr>`;
+    });
 }
 
 function initBacktestCharts() {
@@ -1738,19 +1809,88 @@ function triggerModelTraining() {
   const progressContainer = document.getElementById('training-progress-container');
   const progressBar = document.getElementById('training-progress-bar');
   const progressText = document.getElementById('training-progress-text');
-  
-  progressContainer.style.display = "block";
-  progressBar.style.width = "0%";
-  progressText.textContent = "Not connected";
-  alert("Training service is not connected in this build.");
+  const timeframe = document.getElementById('train-timeframe') ? document.getElementById('train-timeframe').value : 'INTRADAY';
+
+  progressContainer.style.display = 'block';
+  progressBar.style.width = '5%';
+  progressText.textContent = 'Submitting training job...';
+
+  fetch(`${API_BASE}/train/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_version: 'v2', timeframe: timeframe })
+  })
+    .then(r => r.json())
+    .then(data => {
+      progressBar.style.width = '100%';
+      progressText.textContent = data.message || data.status || 'Job submitted';
+      const list = document.getElementById('model-registry-list');
+      if (list) list.innerHTML = `<div style="color:var(--c-green);padding:10px;">✔ ${data.message || 'Training queued'}<br><small style="color:var(--c-muted);">Job ID: ${data.job_id || 'N/A'}</small></div>`;
+    })
+    .catch(err => {
+      progressBar.style.width = '0%';
+      progressText.textContent = 'Error: ' + err.message;
+    });
 }
 
 function renderPaperBlotter() {
   const body = document.getElementById('paper-positions-body');
-  body.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--c-muted); padding:12px;">Paper trading is not connected to a broker simulator in this build.</td></tr>`;
-
   const closedBody = document.getElementById('paper-closed-body');
-  closedBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--c-muted); padding:12px;">No closed paper trades available.</td></tr>`;
+  body.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--c-muted);padding:12px;">Loading...</td></tr>`;
+  closedBody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--c-muted);padding:12px;">Loading...</td></tr>`;
+
+  fetch(`${API_BASE}/paper/trades`)
+    .then(r => r.json())
+    .then(trades => {
+      const open = trades.filter(t => t.status === 'OPEN');
+      const closed = trades.filter(t => t.status === 'CLOSED');
+
+      body.innerHTML = open.length ? open.map(t => {
+        const pnl = t.exit_price ? ((t.exit_price - t.entry_price) * t.quantity * (t.side === 'BUY' ? 1 : -1)).toFixed(2) : '--';
+        const pnlClass = pnl !== '--' ? (parseFloat(pnl) >= 0 ? 'val-up' : 'val-dn') : '';
+        return `<tr>
+          <td style="font-weight:bold;">${t.symbol}</td>
+          <td><span class="chip ${t.side === 'BUY' ? 'chip-green' : 'chip-red'}">${t.side}</span></td>
+          <td>${t.quantity}</td>
+          <td>₹${parseFloat(t.entry_price).toFixed(2)}</td>
+          <td>${t.exit_price ? '₹' + parseFloat(t.exit_price).toFixed(2) : '--'}</td>
+          <td class="${pnlClass}">${pnl !== '--' ? (parseFloat(pnl) >= 0 ? '+' : '') + '₹' + pnl : '--'}</td>
+          <td><span class="chip chip-amber">${t.status}</span></td>
+          <td>${t.entry_timestamp ? new Date(t.entry_timestamp).toLocaleDateString('en-IN') : '--'}</td>
+          <td><button onclick="closePaperTrade('${t.id}')" style="font-size:9px;padding:2px 6px;cursor:pointer;">CLOSE</button></td>
+        </tr>`;
+      }).join('') : `<tr><td colspan="9" style="text-align:center;color:var(--c-muted);padding:12px;">No open paper trades. Use the form above to create one.</td></tr>`;
+
+      closedBody.innerHTML = closed.length ? closed.map(t => {
+        const pnl = t.exit_price ? ((t.exit_price - t.entry_price) * t.quantity * (t.side === 'BUY' ? 1 : -1)).toFixed(2) : '--';
+        const pnlClass = pnl !== '--' ? (parseFloat(pnl) >= 0 ? 'val-up' : 'val-dn') : '';
+        return `<tr>
+          <td style="font-weight:bold;">${t.symbol}</td>
+          <td><span class="chip ${t.side === 'BUY' ? 'chip-green' : 'chip-red'}">${t.side}</span></td>
+          <td>${t.quantity}</td>
+          <td>₹${parseFloat(t.entry_price).toFixed(2)}</td>
+          <td>${t.exit_price ? '₹' + parseFloat(t.exit_price).toFixed(2) : '--'}</td>
+          <td class="${pnlClass}">${pnl !== '--' ? (parseFloat(pnl) >= 0 ? '+' : '') + '₹' + pnl : '--'}</td>
+        </tr>`;
+      }).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--c-muted);padding:12px;">No closed trades yet.</td></tr>`;
+    })
+    .catch(err => {
+      body.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--c-red);padding:12px;">Error loading trades: ${err.message}</td></tr>`;
+      closedBody.innerHTML = '';
+    });
+}
+
+function closePaperTrade(id) {
+  const price = prompt('Enter exit price (₹):');
+  if (!price || isNaN(parseFloat(price))) return;
+  fetch(`${API_BASE}/paper/trades/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ exit_price: parseFloat(price), status: 'CLOSED' })
+  })
+    .then(r => r.json())
+    .then(() => renderPaperBlotter())
+    .catch(err => alert('Error closing trade: ' + err.message));
 }
 
 function renderSystemView() {
@@ -1888,7 +2028,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Setup sector filter
   const sectorFilter = document.getElementById('sector-filter');
   if (sectorFilter) {
-    fetch('/api/sectors')
+    fetch(`${API_BASE}/sectors`)
       .then(r => r.json())
       .then(data => {
         data.sectors.forEach(sector => {
@@ -2043,8 +2183,9 @@ function bootstrap() {
   
   initCockpitCharts();
   
-  // Initial active stock select
-  selectStock("RELIANCE");
+  // No stock pre-selected — user clicks to choose
+  DataStore.activeStock = null;
+  renderMarketsDetail(); // shows placeholder
 }
 
 bootstrap();

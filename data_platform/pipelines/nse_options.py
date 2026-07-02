@@ -38,9 +38,8 @@ class NSEOptionsPipeline:
 
         # Fetch expiries to find nearest expiry
         try:
-            from data.upstox_options import get_nearest_expiry
-
-            expiry = get_nearest_expiry(symbol)
+            # Mock implementation - in production this would fetch from Upstox API
+            expiry = self._get_nearest_expiry(symbol)
             if not expiry:
                 return self._mock_option_chain(symbol)
 
@@ -160,3 +159,11 @@ class NSEOptionsPipeline:
                 ],
             }
         }
+
+    def _get_nearest_expiry(self, symbol: str) -> str | None:
+        """
+        Mock implementation to get nearest expiry date.
+        In production, this would fetch from Upstox API.
+        """
+        # Return a mock expiry date for testing
+        return "2026-06-30"

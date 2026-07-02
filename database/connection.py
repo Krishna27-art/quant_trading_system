@@ -35,13 +35,9 @@ from utils.logger import get_logger
 logger = get_logger("database_connection")
 
 # Try to import Vault client for secure credentials
-try:
-    import security.vault_client  # noqa: F401
-
-    VAULT_AVAILABLE = True
-except ImportError:
-    VAULT_AVAILABLE = False
-    logger.warning("Vault client not available, using environment variables")
+# Note: security.vault_client module does not exist yet - placeholder for future implementation
+VAULT_AVAILABLE = False
+logger.warning("Vault client not implemented yet, using environment variables")
 
 
 class DatabaseRole(str, Enum):
@@ -258,7 +254,12 @@ def execute_batch(query: str, params_list: list[tuple]) -> bool:
 
 
 def create_tables():
-    """Create database tables if they don't exist in PostgreSQL."""
+    """Create database tables if they don't exist in PostgreSQL / SQLite."""
+    db_url = get_database_url()
+    is_sqlite = db_url.startswith("sqlite")
+    
+    # Auto-increment keyword definition
+    serial_pk = "INTEGER PRIMARY KEY AUTOINCREMENT" if is_sqlite else "SERIAL PRIMARY KEY"
 
     # Stocks table
     execute_write("""
@@ -273,9 +274,9 @@ def create_tables():
     """)
 
     # Stock prices table
-    execute_write("""
+    execute_write(f"""
         CREATE TABLE IF NOT EXISTS stock_prices (
-            id SERIAL PRIMARY KEY,
+            id {serial_pk},
             symbol TEXT NOT NULL REFERENCES stocks(symbol),
             price REAL NOT NULL,
             change REAL,
@@ -317,9 +318,9 @@ def create_tables():
     """)
 
     # Orders table
-    execute_write("""
+    execute_write(f"""
         CREATE TABLE IF NOT EXISTS orders (
-            id SERIAL PRIMARY KEY,
+            id {serial_pk},
             client_order_id TEXT UNIQUE NOT NULL,
             symbol TEXT NOT NULL REFERENCES stocks(symbol),
             side TEXT NOT NULL,
@@ -338,9 +339,9 @@ def create_tables():
     """)
 
     # System health table
-    execute_write("""
+    execute_write(f"""
         CREATE TABLE IF NOT EXISTS system_health (
-            id SERIAL PRIMARY KEY,
+            id {serial_pk},
             component TEXT NOT NULL,
             status TEXT NOT NULL,
             value TEXT,
@@ -364,9 +365,9 @@ def create_tables():
     execute_write("CREATE INDEX IF NOT EXISTS idx_orders_state ON orders(state)")
 
     # Positions table
-    execute_write("""
+    execute_write(f"""
         CREATE TABLE IF NOT EXISTS positions (
-            id SERIAL PRIMARY KEY,
+            id {serial_pk},
             symbol TEXT NOT NULL REFERENCES stocks(symbol),
             quantity INTEGER NOT NULL,
             avg_price REAL,
@@ -378,9 +379,9 @@ def create_tables():
     execute_write("CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol)")
 
     # Executions table
-    execute_write("""
+    execute_write(f"""
         CREATE TABLE IF NOT EXISTS executions (
-            id SERIAL PRIMARY KEY,
+            id {serial_pk},
             client_order_id TEXT NOT NULL,
             broker_order_id TEXT,
             symbol TEXT NOT NULL REFERENCES stocks(symbol),
@@ -396,9 +397,9 @@ def create_tables():
     execute_write("CREATE INDEX IF NOT EXISTS idx_executions_symbol ON executions(symbol)")
 
     # Order events table
-    execute_write("""
+    execute_write(f"""
         CREATE TABLE IF NOT EXISTS order_events (
-            id SERIAL PRIMARY KEY,
+            id {serial_pk},
             client_order_id TEXT NOT NULL,
             event_type TEXT NOT NULL,
             from_state TEXT,
@@ -436,15 +437,15 @@ def create_tables():
              created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
              updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
          )
-     """)
+      """)
     execute_write(
         "CREATE INDEX IF NOT EXISTS idx_borrow_reservations_symbol ON borrow_reservations(symbol)"
     )
 
     # Ticks table for live prediction metrics
-    execute_write("""
+    execute_write(f"""
         CREATE TABLE IF NOT EXISTS ticks (
-            id SERIAL PRIMARY KEY,
+            id {serial_pk},
             time TIMESTAMPTZ NOT NULL,
             symbol TEXT NOT NULL REFERENCES stocks(symbol),
             ltp REAL NOT NULL,
@@ -455,9 +456,9 @@ def create_tables():
     execute_write("CREATE INDEX IF NOT EXISTS idx_ticks_time ON ticks(time)")
 
     # Index ticks table for indices value tracking
-    execute_write("""
+    execute_write(f"""
         CREATE TABLE IF NOT EXISTS index_ticks (
-            id SERIAL PRIMARY KEY,
+            id {serial_pk},
             timestamp TIMESTAMPTZ NOT NULL,
             name TEXT NOT NULL,
             value REAL NOT NULL,

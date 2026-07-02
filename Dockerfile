@@ -1,5 +1,5 @@
 # Stage 1: Build environment
-FROM python:3.11-slim as builder
+FROM python:3.12-slim as builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -13,23 +13,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (fast Python package installer)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Add uv to PATH
-ENV PATH="/root/.cargo/bin:${PATH}"
-
 WORKDIR /build
 
 # Copy dependency files
 COPY pyproject.toml ./
+COPY requirements.txt ./
 
-# Install dependencies using uv
-# --no-dev ensures only production dependencies are installed
-RUN uv pip install --system -r pyproject.toml
+# Install dependencies using pip
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Production runtime
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

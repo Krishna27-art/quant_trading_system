@@ -171,39 +171,53 @@ def get_model_version(version_key: str, default: str) -> str:
 # Data fetcher — yfinance with validation
 # ---------------------------------------------------------------------------
 
+# Upstox is our single market-data source — yfinance removed
+from data_platform.upstox_client import get_candles, get_index_overview
+
 def fetch_ohlcv(symbol: str, period: str, interval: str, min_bars: int) -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV from yfinance. Returns None if data is insufficient or invalid.
-    NSE suffix (.NS) is appended automatically.
+    Fetch OHLCV from Upstox. Returns None if data is insufficient or invalid.
     """
-    ticker = f"{symbol}.NS"
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
+        # Convert period config (e.g. 5d, 1y, 2y) into days integer
+        days = 180
+        if "d" in period:
+            days = int(period.replace("d", ""))
+        elif "y" in period:
+            days = int(period.replace("y", "")) * 365
+        
+        # Upstox client get_candles takes symbol and interval (1minute, 1day, etc.)
+        upstox_interval = "1day"
+        if interval == "1m":
+            upstox_interval = "1minute"
+        elif interval == "1d":
+            upstox_interval = "1day"
+        elif interval == "1wk":
+            upstox_interval = "1week"
+            
+        candles = get_candles(symbol, interval=upstox_interval, days=days)
+        if not candles:
+            return None
+            
+        # Format to DataFrame matching columns and index expected by pipeline
+        df = pd.DataFrame(candles)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df.set_index("timestamp", inplace=True)
+        df.sort_index(inplace=True)
+        
+        df = df[["open", "high", "low", "close", "volume"]].copy()
+        df = df.astype({c: float for c in df.columns})
+        df = df.dropna(subset=["close", "volume"])
+        df = df[df["volume"] > 0]
+        
+        if len(df) < min_bars:
+            logger.warning(f"{symbol}: only {len(df)} bars from Upstox, need {min_bars}. Skipping.")
+            return None
+            
+        return df
     except Exception as e:
-        logger.error(f"yfinance download failed for {ticker}: {e}")
+        logger.error(f"Upstox fetch failed for {symbol}: {e}")
         return None
-
-    if df is None or df.empty:
-        logger.warning(f"No data returned for {ticker}")
-        return None
-
-    # Flatten MultiIndex columns (yfinance returns these for single ticker too)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [c[0] for c in df.columns]
-
-    df = df.rename(columns={
-        "Open": "open", "High": "high", "Low": "low",
-        "Close": "close", "Volume": "volume",
-    })
-    df = df[["open", "high", "low", "close", "volume"]].copy()
-    df = df.dropna(subset=["close", "volume"])
-    df = df[df["volume"] > 0]
-
-    if len(df) < min_bars:
-        logger.warning(f"{ticker}: only {len(df)} bars, need {min_bars}. Skipping.")
-        return None
-
-    return df
 
 
 # ---------------------------------------------------------------------------
@@ -483,26 +497,20 @@ def generate_predictions_for_timeframe(
 # ---------------------------------------------------------------------------
 
 def fetch_market_indices() -> list[dict]:
-    indices = {
-        "^NSEI": "NIFTY 50",
-        "^NSEBANK": "NIFTY BANK",
-        "^BSESN": "BSE SENSEX",
-        "^INDIAVIX": "INDIA VIX",
-    }
+    """Fetch indices quotes using Upstox get_index_overview."""
     results = []
-    for ticker, name in indices.items():
-        try:
-            df = yf.download(ticker, period="5d", progress=False, auto_adjust=True)
-            if df is None or df.empty or len(df) < 2:
-                continue
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [c[0] for c in df.columns]
-            latest = float(df["Close"].iloc[-1])
-            prev = float(df["Close"].iloc[-2])
-            chg = round(((latest - prev) / prev) * 100, 2) if prev > 0 else 0.0
-            results.append({"symbol": name, "price": round(latest, 2), "change_pct": chg})
-        except Exception as e:
-            logger.warning(f"Failed to fetch index {ticker}: {e}")
+    try:
+        overview = get_index_overview()
+        for name, data in overview.items():
+            # Translate keys
+            pretty_name = "NIFTY 50" if name == "NIFTY50" else "BSE SENSEX" if name == "SENSEX" else "NIFTY BANK" if name == "BANKNIFTY" else "INDIA VIX" if name == "INDIAVIX" else name
+            results.append({
+                "symbol": pretty_name,
+                "price": round(data["last_price"], 2) if data.get("last_price") else 0.0,
+                "change_pct": round(data["pct_change"], 2) if data.get("pct_change") else 0.0,
+            })
+    except Exception as e:
+        logger.warning(f"Failed to fetch Upstox index overview: {e}")
     return results
 
 

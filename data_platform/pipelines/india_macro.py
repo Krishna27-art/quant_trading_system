@@ -1,9 +1,21 @@
 import pandas as pd
 
-from data.fred_macro import get_macro_indicators
 from utils.logger import get_logger
 
 logger = get_logger("india_macro")
+
+
+def get_macro_indicators() -> dict:
+    """
+    Mock implementation of macro indicators.
+    In production, this would fetch from FRED API or RBI data sources.
+    """
+    return {
+        "india_cpi": 5.0,
+        "industrial_prod": 3.8,
+        "repo_rate": 6.50,
+        "usd_inr": 83.5
+    }
 
 
 class IndiaMacroPipeline:

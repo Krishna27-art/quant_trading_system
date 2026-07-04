@@ -176,11 +176,17 @@ def feed_process_worker(symbols: list[str], duration_s: int, tick_event):
     feed_strategy_buf = SPSCTickRingBuffer("feed_to_strategy", create=False)
 
     def on_feed_tick(feed_tick: FeedTick):
-        # Spin wait if buffer full (simple backpressure)
+        # Exponential backoff for buffer full (avoid CPU waste)
+        retries = 0
+        max_retries = 10
         while not feed_strategy_buf.write_tick(
             feed_tick.symbol, feed_tick.ltp, feed_tick.volume, feed_tick.timestamp
         ):
-            pass  # Busy wait on full buffer instead of sleep
+            retries += 1
+            if retries >= max_retries:
+                logger.warning(f"Feed buffer full, dropping tick for {feed_tick.symbol}")
+                return
+            time.sleep(min(0.001 * (2 ** retries), 0.1))  # Exponential backoff, max 100ms
         tick_event.set()
 
     async def mock_ws_connect(symbols: list[str], on_tick: callable):
@@ -270,10 +276,17 @@ def strategy_process_worker(
         orders = orchestrator.on_tick(tick_bar)
         if orders:
             for order in orders:
+                # Exponential backoff for buffer full (avoid CPU waste)
+                retries = 0
+                max_retries = 10
                 while not strategy_exec_buf.write_order(
                     order.order_id, order.symbol, order.quantity
                 ):
-                    pass  # Busy wait on full buffer
+                    retries += 1
+                    if retries >= max_retries:
+                        logger.warning(f"Order buffer full, dropping order {order.order_id}")
+                        return
+                    time.sleep(min(0.001 * (2 ** retries), 0.1))  # Exponential backoff, max 100ms
                 order_event.set()
 
     aggregator = BarAggregator(on_bar_completed=handle_completed_bar)
@@ -328,12 +341,33 @@ def run_multi_process_topology(
     config: TradingConfig, prev_day_data: dict, symbols: list[str], duration_s: int
 ):
     import multiprocessing
+    import signal
+    import atexit
 
     from data_platform.ring_buffer import SPSCOrderRingBuffer, SPSCTickRingBuffer
 
     logger.info("Initializing Zero-Copy Shared Ring Buffers...")
     buf1 = SPSCTickRingBuffer("feed_to_strategy", create=True)
     buf2 = SPSCOrderRingBuffer("strategy_to_exec", create=True)
+
+    # Register cleanup handlers
+    def cleanup_shared_memory():
+        try:
+            buf1.unlink()
+            buf2.unlink()
+            logger.info("Shared memory cleaned up")
+        except Exception as e:
+            logger.error(f"Error cleaning shared memory: {e}")
+
+    atexit.register(cleanup_shared_memory)
+
+    def signal_handler(signum, frame):
+        logger.warning(f"Received signal {signum}, cleaning up...")
+        cleanup_shared_memory()
+        sys.exit(1)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     tick_event = multiprocessing.Event()
     order_event = multiprocessing.Event()

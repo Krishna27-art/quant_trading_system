@@ -221,6 +221,8 @@ def get_stock_quote(symbol: str) -> dict | None:
         return None
     raw = get_live_quotes([key])
     q = raw.get(key) or raw.get(key.replace("|", ":"))
+    if not q and raw:
+        q = list(raw.values())[0]
     if not q:
         return None
     return _format_quote(symbol, q)

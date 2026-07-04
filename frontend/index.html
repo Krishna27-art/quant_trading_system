@@ -361,6 +361,9 @@ tr:hover { background: var(--bg-widget); }
                 <span>FII / DII FLOWS (Cr)</span>
                 <span id="fii-flow-date" style="font-size:9px;">--</span>
               </div>
+              <div style="height: 120px; min-height:100px;">
+                <canvas id="chart-fii-flow"></canvas>
+              </div>
               <div style="display:flex; flex-direction:column; gap:4px;">
                 <div style="display:flex; justify-content:space-between; font-size:10.5px;">
                   <span>FII Net Cash:</span>
@@ -1067,18 +1070,73 @@ const DataStore = {
   },
 
   async pollIndices() {
-    const data = await this.fetchAPI('/indices');
-    if (data && data.length) {
-      this.indices = data;
-      this.notify('indices', data);
+    const data = await this.fetchAPI('/cockpit');
+    if (data && data.indices) {
+      // Map cockpit dict to the expected list format
+      const _id_map = {
+        "NIFTY50": "NIFTY 50",
+        "SENSEX": "BSE SENSEX",
+        "BANKNIFTY": "NIFTY BANK",
+        "FINNIFTY": "NIFTY FIN SVC",
+        "INDIAVIX": "INDIA VIX"
+      };
+      const list = [];
+      for (const [key, name] of Object.entries(_id_map)) {
+        const item = data.indices[key];
+        if (item) {
+          list.push({
+            name: name,
+            value: item.last_price || 0,
+            change: item.pct_change || 0
+          });
+        }
+      }
+      this.indices = list;
+      this.notify('indices', list);
+
+      // Render FII/DII flow statistics on dashboard
+      if (data.fii && data.dii) {
+        const dateEl = document.getElementById('fii-flow-date');
+        if (dateEl) dateEl.textContent = data.fii.date || '';
+
+        const fiiCash = data.fii.total_net_cash;
+        const diiCash = data.dii.net_amount;
+        const fiiFut = data.fii.total_net_futures;
+
+        const fiiCashEl = document.getElementById('fii-net-cash');
+        if (fiiCashEl && fiiCash !== undefined) {
+          fiiCashEl.textContent = fiiCash >= 0 ? `+${fiiCash.toLocaleString()}` : fiiCash.toLocaleString();
+          fiiCashEl.className = fiiCash >= 0 ? 'val-up' : 'val-dn';
+        }
+
+        const diiCashEl = document.getElementById('dii-net-cash');
+        if (diiCashEl && diiCash !== undefined) {
+          diiCashEl.textContent = diiCash >= 0 ? `+${diiCash.toLocaleString()}` : diiCash.toLocaleString();
+          diiCashEl.className = diiCash >= 0 ? 'val-up' : 'val-dn';
+        }
+
+        const fiiFutEl = document.getElementById('fii-net-futures');
+        if (fiiFutEl && fiiFut !== undefined) {
+          fiiFutEl.textContent = fiiFut >= 0 ? `+${fiiFut.toLocaleString()}` : fiiFut.toLocaleString();
+          fiiFutEl.className = fiiFut >= 0 ? 'val-up' : 'val-dn';
+        }
+      }
     }
   },
 
   async pollSectors() {
-    const data = await this.fetchAPI('/sectors');
-    if (data && data.length) {
-      this.sectors = data;
-      this.notify('sectors', data);
+    const data = await this.fetchAPI('/sectors/live');
+    if (data) {
+      const list = [];
+      for (const [name, sec] of Object.entries(data)) {
+        list.push({
+          name: name,
+          change: sec.pct_change || 0,
+          value: sec.last_price || 0
+        });
+      }
+      this.sectors = list;
+      this.notify('sectors', list);
     }
   }
 };

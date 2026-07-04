@@ -7,9 +7,9 @@ Run this before starting the live prediction loop.
     python scripts/train_base_models.py [--symbols RELIANCE TCS ...] [--model-dir /path]
 
 Models saved:
-    <MODEL_PATH>/LOGREG_LONGTERM_v1.joblib
-    <MODEL_PATH>/XGB_SWING_v1/          (EnsembleModel directory)
-    <MODEL_PATH>/LGBM_INTRADAY_v1.joblib
+    <MODEL_PATH>/meta_ensemble_longterm/
+    <MODEL_PATH>/meta_ensemble_swing/
+    <MODEL_PATH>/meta_ensemble_intraday/
 
 After this script completes, ModelRegistry will load them automatically.
 """
@@ -34,6 +34,7 @@ from prediction_intelligence.base_logistic import (
     SWING_FEATURES,
     LONGTERM_FEATURES,
 )
+from prediction_intelligence.meta_ensemble import MetaEnsemble
 from utils.label_validator import LabelValidator
 from utils.logger import get_logger
 
@@ -160,13 +161,13 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
         logger.error("Combined LONGTERM label validation failed — aborting")
         return
 
-    model     = BaseLogistic(n_splits=5)
-    save_path = os.path.join(model_dir, "LOGREG_LONGTERM_v1.joblib")
-    metrics   = model.train(X, y, LONGTERM_FEATURES, save_path=save_path)
-    logger.info(f"LONGTERM model saved. Metrics: {metrics}")
+    model     = MetaEnsemble(timeframe="LONGTERM", model_dir=model_dir, feature_cols=LONGTERM_FEATURES)
+    metrics   = model.fit(X, y)
+    save_path = model.save(os.path.join(model_dir, "meta_ensemble_longterm"))
+    logger.info(f"LONGTERM MetaEnsemble saved. Metrics: {metrics}")
 
     # Register in singleton so downstream calls within same process pick it up
-    ModelRegistry().register("LOGREG_LONGTERM_v1", "LONGTERM", model)
+    ModelRegistry().register("META_LONGTERM_v1", "LONGTERM", model)
 
 
 def train_swing(symbols: list[str], model_dir: str) -> None:
@@ -217,13 +218,12 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
         logger.error("Combined SWING label validation failed — aborting")
         return
 
-    model    = EnsembleModel(feature_cols=SWING_FEATURES)
-    save_dir = os.path.join(model_dir, "XGB_SWING_v1")
-    model.train(X, y)
-    model.save(save_dir)
-    logger.info(f"SWING ensemble saved → {save_dir}")
+    model    = MetaEnsemble(timeframe="SWING", model_dir=model_dir, feature_cols=SWING_FEATURES)
+    metrics  = model.fit(X, y)
+    save_dir = model.save(os.path.join(model_dir, "meta_ensemble_swing"))
+    logger.info(f"SWING MetaEnsemble saved → {save_dir}. Metrics: {metrics}")
 
-    ModelRegistry().register("ENSEMBLE_SWING_v1", "SWING", model)
+    ModelRegistry().register("META_SWING_v1", "SWING", model)
 
 
 def train_intraday(symbols: list[str], model_dir: str) -> None:
@@ -274,12 +274,12 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
         logger.error("Combined INTRADAY label validation failed — aborting")
         return
 
-    model     = BaseLogistic(n_splits=5)
-    save_path = os.path.join(model_dir, "LGBM_INTRADAY_v1.joblib")
-    metrics   = model.train(X, y, INTRADAY_FEATURES, save_path=save_path)
-    logger.info(f"INTRADAY model saved. Metrics: {metrics}")
+    model     = MetaEnsemble(timeframe="INTRADAY", model_dir=model_dir, feature_cols=INTRADAY_FEATURES)
+    metrics   = model.fit(X, y)
+    save_path = model.save(os.path.join(model_dir, "meta_ensemble_intraday"))
+    logger.info(f"INTRADAY MetaEnsemble saved. Metrics: {metrics}")
 
-    ModelRegistry().register("LGBM_INTRADAY_v1", "INTRADAY", model)
+    ModelRegistry().register("META_INTRADAY_v1", "INTRADAY", model)
 
 
 # ---------------------------------------------------------------------------

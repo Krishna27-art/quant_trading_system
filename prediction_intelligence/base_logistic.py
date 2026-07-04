@@ -569,12 +569,22 @@ class ModelRegistry:
         if key in self._cache:
             return self._cache[key]
 
-        model: BaseLogistic | EnsembleModel
+        model: BaseLogistic | EnsembleModel | MetaEnsemble
 
         # Resolve disk name (handles legacy save paths)
         disk_name = self._DISK_ALIASES.get(model_version, model_version)
 
-        if model_version.startswith("ENSEMBLE"):
+        if model_version.startswith("META"):
+            from prediction_intelligence.meta_ensemble import MetaEnsemble
+            model = MetaEnsemble(timeframe=timeframe, model_dir=self._model_dir)
+            dir_p = os.path.join(self._model_dir, f"meta_ensemble_{timeframe.lower()}")
+            if os.path.isdir(dir_p):
+                model.load(dir_p)
+            else:
+                logger.warning(
+                    f"ModelRegistry: MetaEnsemble dir not found: {dir_p} — model NOT loaded"
+                )
+        elif model_version.startswith("ENSEMBLE"):
             model = EnsembleModel(feature_cols=self._feature_cols(timeframe))
             dir_p = os.path.join(self._model_dir, disk_name)
             if os.path.isdir(dir_p):

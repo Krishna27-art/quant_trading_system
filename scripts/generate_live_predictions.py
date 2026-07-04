@@ -75,7 +75,7 @@ TIMEFRAME_CONFIG = {
         "target_multiplier": 2.5,  # Target = ATR * 2.5 (was hardcoded 2.0)
         "sl_multiplier": 1.0,    # SL = ATR * 1.0
         "model_version_key": "INTRADAY_MODEL_VERSION",
-        "default_version": "LGBM_INTRADAY_v1",
+        "default_version": "META_INTRADAY_v1",
     },
     "SWING": {
         "period": "1y",
@@ -87,10 +87,7 @@ TIMEFRAME_CONFIG = {
         "target_multiplier": 3.0,  # Target = ATR * 3.0 (was hardcoded 2.0)
         "sl_multiplier": 1.0,    # SL = ATR * 1.0
         "model_version_key": "SWING_MODEL_VERSION",
-        # ENSEMBLE_ prefix is required: ModelRegistry uses it to detect EnsembleModel
-        # vs BaseLogistic (joblib). train_base_models.py saves to XGB_SWING_v1/ dir but
-        # registers under the ENSEMBLE_SWING_v1 key in the singleton.
-        "default_version": "ENSEMBLE_SWING_v1",
+        "default_version": "META_SWING_v1",
     },
     "LONGTERM": {
         "period": "2y",
@@ -102,7 +99,7 @@ TIMEFRAME_CONFIG = {
         "target_multiplier": 2.5,  # Target = ATR * 2.5 (was hardcoded 2.0)
         "sl_multiplier": 1.0,    # SL = ATR * 1.0
         "model_version_key": "LONGTERM_MODEL_VERSION",
-        "default_version": "LOGREG_LONGTERM_v1",
+        "default_version": "META_LONGTERM_v1",
     },
 }
 
@@ -407,7 +404,10 @@ def generate_predictions_for_timeframe(
             # Get calibrated probability from model
             try:
                 proba = model.predict_proba(X)[0]
-                win_prob = float(proba)
+                if isinstance(proba, (np.ndarray, list)) and len(proba) > 1:
+                    win_prob = float(proba[1])
+                else:
+                    win_prob = float(proba)
             except AttributeError:
                 # Regressor — treat output as a score, normalize to 0-1
                 raw = float(model.predict(X)[0])

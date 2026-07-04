@@ -4,7 +4,7 @@ import unittest.mock as mock
 # This test should be updated to use data_platform.pipelines.nse_options instead
 # For now, commenting out to prevent import errors
 
-# from data.upstox_options import fetch_option_chain_pcr
+from data.upstox_options import fetch_option_chain_pcr
 from utils.upstox_helper import get_instrument_key
 
 

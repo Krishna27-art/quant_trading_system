@@ -53,6 +53,8 @@ NSE_UNIVERSE = [
     {"symbol": "CIPLA", "name": "Cipla Ltd.", "sector": "Healthcare", "cap": "Large"},
     {"symbol": "DRREDDY", "name": "Dr. Reddy's Laboratories Ltd.", "sector": "Healthcare", "cap": "Large"},
     {"symbol": "EICHERMOT", "name": "Eicher Motors Ltd.", "sector": "Automobile", "cap": "Large"},
+    {"symbol": "TMCV", "name": "Tata Motors Ltd. (Commercial)", "sector": "Automobile", "cap": "Large"},
+    {"symbol": "NESTLEIND", "name": "Nestle India Ltd.", "sector": "Consumer Goods", "cap": "Large"},
 
     # === MID CAP (50 Stocks) ===
     {"symbol": "AUBANK", "name": "AU Small Finance Bank Ltd.", "sector": "Financial Services", "cap": "Mid"},
@@ -102,6 +104,9 @@ NSE_UNIVERSE = [
     {"symbol": "SUPREMEIND", "name": "Supreme Industries Ltd.", "sector": "Capital Goods", "cap": "Mid"},
     {"symbol": "SYNGENE", "name": "Syngene International Ltd.", "sector": "Healthcare", "cap": "Mid"},
     {"symbol": "TATACHEM", "name": "Tata Chemicals Ltd.", "sector": "Chemicals", "cap": "Mid"},
+    {"symbol": "ACC", "name": "ACC Ltd.", "sector": "Materials", "cap": "Mid"},
+    {"symbol": "JUBLFOOD", "name": "Jubilant FoodWorks Ltd.", "sector": "Consumer Services", "cap": "Mid"},
+    {"symbol": "COLPAL", "name": "Colgate-Palmolive (India) Ltd.", "sector": "Consumer Goods", "cap": "Mid"},
 
     # === SMALL CAP (50 Stocks) ===
     {"symbol": "AEGISLOG", "name": "Aegis Logistics Ltd.", "sector": "Services", "cap": "Small"},
@@ -148,5 +153,10 @@ NSE_UNIVERSE = [
     {"symbol": "PTC", "name": "PTC India Ltd.", "sector": "Financial Services", "cap": "Small"},
     {"symbol": "RAILTEL", "name": "RailTel Corporation of India Ltd.", "sector": "Telecommunication", "cap": "Small"},
     {"symbol": "RVNL", "name": "Rail Vikas Nigam Ltd.", "sector": "Construction", "cap": "Small"},
-    {"symbol": "SJVN", "name": "SJVN Ltd.", "sector": "Energy", "cap": "Small"}
+    {"symbol": "SJVN", "name": "SJVN Ltd.", "sector": "Energy", "cap": "Small"},
+    {"symbol": "ZENSARTECH", "name": "Zensar Technologies Ltd.", "sector": "Technology", "cap": "Small"},
+    {"symbol": "PVRINOX", "name": "PVR INOX Ltd.", "sector": "Consumer Services", "cap": "Small"},
+    {"symbol": "TATAINVEST", "name": "Tata Investment Corporation Ltd.", "sector": "Financial Services", "cap": "Small"},
+    {"symbol": "MAHSEAMLES", "name": "Maharashtra Seamless Ltd.", "sector": "Capital Goods", "cap": "Small"},
+    {"symbol": "ABREL", "name": "Aditya Birla Real Estate Ltd.", "sector": "Materials", "cap": "Small"}
 ]

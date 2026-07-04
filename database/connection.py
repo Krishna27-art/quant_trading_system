@@ -212,6 +212,11 @@ def execute_query(
             if not is_sqlite:
                 conn.rollback()
             raise e
+def execute_read(query: str, params: tuple | None = None) -> Any | None:
+    """
+    Execute a read query (SELECT) and return all results.
+    """
+    return execute_query(query, params, fetch="all")
 
 
 def execute_write(query: str, params: tuple | None = None) -> bool:
@@ -288,11 +293,11 @@ def create_tables():
         )
     """)
 
-    # Predictions table
+    # Predictions table - aligned with SQLAlchemy model and evaluation logic
     execute_write("""
         CREATE TABLE IF NOT EXISTS predictions (
             id TEXT PRIMARY KEY,
-            symbol TEXT NOT NULL REFERENCES stocks(symbol),
+            symbol TEXT NOT NULL,
             model_version TEXT,
             features_used TEXT,
             prediction TEXT NOT NULL,

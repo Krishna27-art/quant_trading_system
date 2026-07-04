@@ -23,6 +23,8 @@ import argparse
 import asyncio
 import contextlib
 import datetime
+from dotenv import load_dotenv
+load_dotenv()
 import sys
 import threading
 import time

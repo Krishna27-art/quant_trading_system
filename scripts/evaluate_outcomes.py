@@ -26,11 +26,11 @@ def evaluate_predictions(dry_run: bool = False):
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    # Find predictions that are not yet fully evaluated (actual_outcome is NULL or 'PENDING')
+    # Find predictions that are not yet fully evaluated (actual_outcome is NULL, 'PENDING', or 'OPEN')
     cursor.execute("""
         SELECT id, symbol, prediction, horizon, confidence, entry_price, stop_loss, target_price, prediction_time, expiry_time
         FROM predictions
-        WHERE actual_outcome IS NULL OR actual_outcome = 'PENDING'
+        WHERE actual_outcome IS NULL OR actual_outcome = 'PENDING' OR actual_outcome = 'OPEN'
     """)
     pending = cursor.fetchall()
     
@@ -57,11 +57,15 @@ def evaluate_predictions(dry_run: bool = False):
         except Exception:
             pred_time = now_ist()
 
+        # Make pred_time naive for comparison
+        pred_time_naive = pred_time.replace(tzinfo=None)
+
         # If it hasn't expired yet and we are still in trading, we evaluate the price path since prediction time
         now = now_ist()
+        now_naive = now.replace(tzinfo=None)
         
         # Use appropriate interval based on horizon
-        interval = "15minute" if horizon == "INTRADAY" else "1day"
+        interval = "30minute" if horizon == "INTRADAY" else "1day"
         days_to_fetch = 2 if horizon == "INTRADAY" else 30
         
         candles = get_candles(symbol, interval=interval, days=days_to_fetch)
@@ -85,10 +89,10 @@ def evaluate_predictions(dry_run: bool = False):
         path = []
         for c in candles:
             try:
-                c_time = datetime.fromisoformat(c["timestamp"].replace("Z", "+00:00"))
+                c_time = datetime.fromisoformat(c["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
             except Exception:
                 continue
-            if c_time >= pred_time:
+            if c_time >= pred_time_naive:
                 path.append(c)
                 
         # If no candles yet since prediction, check if expired by time
@@ -159,7 +163,7 @@ def evaluate_predictions(dry_run: bool = False):
             is_correct = 0
         else:
             # Check for expiry (more than 1 day for intraday, 7 days for swing)
-            elapsed_days = (now - pred_time).days
+            elapsed_days = (now_naive - pred_time_naive).days
             limit_days = 1 if horizon == "INTRADAY" else 7
             if elapsed_days >= limit_days:
                 outcome = "EXPIRED"

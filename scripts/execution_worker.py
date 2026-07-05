@@ -49,10 +49,7 @@ async def run_worker(config=None):
         paper_broker = PaperBrokerAdapter(slippage_bps=5.0)
         ems.register_broker("paper", paper_broker, is_primary=True)
     elif config.mode == ExecutionMode.LIVE:
-        from portfolio_execution.execution.brokers.zerodha_broker import ZerodhaBrokerAdapter
-
-        zerodha_broker = ZerodhaBrokerAdapter()
-        ems.register_broker("zerodha", zerodha_broker, is_primary=True)
+        raise NotImplementedError("Live execution is disabled. This is a prediction-only system.")
 
     await ems.connect_all()
 

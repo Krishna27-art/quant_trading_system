@@ -27,19 +27,7 @@ class KillSwitchError(RuntimeError):
 
 
 def _load_kite_client() -> Any:
-    api_key = os.getenv("ZERODHA_API_KEY")
-    access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
-    if not api_key or not access_token:
-        raise KillSwitchError("ZERODHA_API_KEY and ZERODHA_ACCESS_TOKEN are required")
-
-    try:
-        from kiteconnect import KiteConnect
-    except Exception as exc:
-        raise KillSwitchError("kiteconnect is required for live kill switch execution") from exc
-
-    kite = KiteConnect(api_key=api_key)
-    kite.set_access_token(access_token)
-    return kite
+    raise KillSwitchError("Live execution is disabled. No broker connection available.")
 
 
 def _append_kill_log(event: dict[str, Any]) -> None:

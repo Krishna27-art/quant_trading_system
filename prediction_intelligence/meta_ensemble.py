@@ -123,13 +123,26 @@ class MetaEnsemble:
             logger.info(f"[{self.timeframe}] Training BaseLogistic...")
             logistic_metrics = self.logistic.train(X, y, self.feature_cols)
 
+            # Determine purging horizon (V) based on timeframe
+            if self.timeframe == "INTRADAY":
+                v_barrier = 10
+            elif self.timeframe == "SWING":
+                v_barrier = 15
+            else:
+                v_barrier = 12
+
             # Generate out-of-fold predictions for stacking
             tscv = TimeSeriesSplit(n_splits=5)
             oof_preds = np.zeros((n_samples, 3))  # 3 columns for LGBM, XGB, LR probabilities
             
             for train_idx, val_idx in tscv.split(X):
-                X_train_fold, X_val_fold = X.iloc[train_idx], X.iloc[val_idx]
-                y_train_fold, y_val_fold = y.iloc[train_idx], y.iloc[val_idx]
+                if len(train_idx) > v_barrier:
+                    train_idx_purged = train_idx[:-v_barrier]
+                else:
+                    train_idx_purged = train_idx
+
+                X_train_fold, X_val_fold = X.iloc[train_idx_purged], X.iloc[val_idx]
+                y_train_fold, y_val_fold = y.iloc[train_idx_purged], y.iloc[val_idx]
 
                 # Base models fitted on fold (using simple train/val logic or full fold fit)
                 # Since early stopping splits are tricky on CV folds, we train simplified models on the fold

@@ -70,4 +70,45 @@ def extract_macro_features() -> dict:
     except Exception as e:
         print(f"Error fetching macro features: {e}")
 
+    # Provide direct alias for canonical feature builder
+    features["vix"] = features.get("vix_level", 15.0)
+    features["nifty_pcr"] = features.get("nifty_pcr", 1.0)
     return features
+
+
+def extract_historical_macro(timestamps: pd.DatetimeIndex) -> pd.DataFrame:
+    """
+    Extract historical macroeconomic time-series aligned to given timestamps.
+    Used during model training to eradicate covariate shift.
+    """
+    out = pd.DataFrame(index=timestamps)
+    if len(timestamps) == 0:
+        out["vix"] = 15.0
+        out["nifty_pcr"] = 1.0
+        return out
+
+    try:
+        start_dt = pd.to_datetime(timestamps.min()).strftime("%Y-%m-%d")
+        end_dt = (pd.to_datetime(timestamps.max()) + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+
+        vix_df = yf.download("^INDIAVIX", start=start_dt, end=end_dt, progress=False)
+        if not vix_df.empty:
+            if isinstance(vix_df.columns, pd.MultiIndex):
+                close = vix_df["Close"]
+            elif "Close" in vix_df.columns:
+                close = vix_df["Close"]
+            else:
+                close = vix_df
+            if isinstance(close, pd.DataFrame):
+                close = close[close.columns[0]]
+            vix_series = close.reindex(timestamps, method="ffill").bfill()
+            out["vix"] = vix_series.fillna(15.0)
+        else:
+            out["vix"] = 15.0
+    except Exception as e:
+        print(f"Notice: Could not fetch historical VIX ({e}). Falling back to baseline.")
+        out["vix"] = 15.0
+
+    out["nifty_pcr"] = 1.0  # Historical PCR baseline
+    return out
+

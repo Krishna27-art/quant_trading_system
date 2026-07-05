@@ -115,6 +115,7 @@ class FeedManager:
         on_tick: Callable[[TickData], None] | None = None,
         on_failover: Callable[[FeedTier, FeedTier], None] | None = None,
         redis_client: Any | None = None,
+        bar_aggregator: Any | None = None,
     ) -> None:
         self._ws_connect = ws_connect_fn
         self._rest_poll = rest_poll_fn
@@ -124,6 +125,7 @@ class FeedManager:
         self.on_tick = on_tick
         self.on_failover = on_failover
         self.redis_client = redis_client  # Optional Redis client for publishing alerts
+        self.bar_aggregator = bar_aggregator
 
         # Instantiate DataQualityGate
         from data_platform.feeds.data_quality_gate import DataQualityGate
@@ -314,6 +316,12 @@ class FeedManager:
             stats.consecutive_failures = 0
             stats.last_tick_epoch = time.time()
             self._cache[tick.symbol] = tick
+
+        if self.bar_aggregator:
+            try:
+                self.bar_aggregator.on_tick(tick)
+            except Exception as e:
+                logger.error(f"BarAggregator error for {tick.symbol}: {e}")
 
         if self.on_tick:
             self.on_tick(tick)

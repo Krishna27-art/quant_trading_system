@@ -64,7 +64,7 @@ class DataFeedConfig:
 class BrokerConfig:
     """Broker connection configuration."""
 
-    primary_broker: str = os.environ.get("PRIMARY_BROKER", "zerodha")
+    primary_broker: str = os.environ.get("PRIMARY_BROKER", "paper")
     api_key: str = os.environ.get("BROKER_API_KEY", "")
     api_secret: str = os.environ.get("BROKER_API_SECRET", "")
     access_token: str = os.environ.get("BROKER_ACCESS_TOKEN", "")

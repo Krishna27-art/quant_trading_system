@@ -170,20 +170,27 @@ def get_model_version(version_key: str, default: str) -> str:
 
 # Upstox is our single market-data source — yfinance removed
 from data_platform.upstox_client import get_candles, get_index_overview
+from data_platform.feeds.bar_aggregator import get_cached_ohlcv
 
 def fetch_ohlcv(symbol: str, period: str, interval: str, min_bars: int) -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV from Upstox. Returns None if data is insufficient or invalid.
+    Fetch OHLCV from local BarAggregator cache (Redis/in-memory).
+    Falls back to Upstox REST only if cache is cold/sparse on initial startup.
     """
     try:
-        # Convert period config (e.g. 5d, 1y, 2y) into days integer
+        # Step 1: Attempt local in-memory/Redis cache read (zero REST latency)
+        cached_df = get_cached_ohlcv(symbol, interval, min_bars=min_bars)
+        if len(cached_df) >= min_bars:
+            return cached_df
+
+        # Step 2: Fallback to synchronous REST on cold start
+        logger.info(f"{symbol} [{interval}]: local cache cold ({len(cached_df)}/{min_bars} bars) — bootstrapping from Upstox REST")
         days = 180
         if "d" in period:
             days = int(period.replace("d", ""))
         elif "y" in period:
             days = int(period.replace("y", "")) * 365
         
-        # Upstox client get_candles takes symbol and interval (1minute, 1day, etc.)
         upstox_interval = "1day"
         if interval == "1m":
             upstox_interval = "1minute"
@@ -196,7 +203,6 @@ def fetch_ohlcv(symbol: str, period: str, interval: str, min_bars: int) -> Optio
         if not candles:
             return None
             
-        # Format to DataFrame matching columns and index expected by pipeline
         df = pd.DataFrame(candles)
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df.set_index("timestamp", inplace=True)
@@ -213,7 +219,7 @@ def fetch_ohlcv(symbol: str, period: str, interval: str, min_bars: int) -> Optio
             
         return df
     except Exception as e:
-        logger.error(f"Upstox fetch failed for {symbol}: {e}")
+        logger.error(f"OHLCV fetch failed for {symbol}: {e}")
         return None
 
 
@@ -382,22 +388,54 @@ def generate_predictions_for_timeframe(
                 logger.warning(f"{sym} [{timeframe}]: feature build failed, skipping.")
                 continue
 
-            # Take the last row for live prediction
-            features = df_feats.iloc[-1].fillna(0.0)
-
-            # Align features to the expected model columns.
-            # Allow a partial match — missing columns will be filled with 0.0 by
-            # the model's internal SimpleImputer. Only skip if ALL columns are missing.
-            available_features = [f for f in FEATURE_COLS if f in features.index]
-            if not available_features:
-                logger.warning(f"{sym} [{timeframe}]: no features matched {FEATURE_COLS}, skipping.")
+            # Fail closed on schema mismatch
+            missing_cols = set(FEATURE_COLS) - set(df_feats.columns)
+            if missing_cols:
+                logger.error(f"{sym} [{timeframe}]: Fail-closed rejection! Missing mandatory columns: {missing_cols}")
                 continue
-            missing = set(FEATURE_COLS) - set(available_features)
-            if missing:
-                logger.debug(f"{sym} [{timeframe}]: filling {len(missing)} missing features with 0: {missing}")
-                for col in missing:
-                    features[col] = 0.0
-                available_features = FEATURE_COLS
+
+            # Extract latest row
+            features = df_feats.iloc[-1].copy()
+
+            # Check if features have NaNs or need imputation
+            if features[FEATURE_COLS].isna().any():
+                imputer = ModelRegistry().get_imputer(timeframe)
+                if imputer is not None:
+                    try:
+                        imputed_vals = imputer.transform(features[FEATURE_COLS].to_frame().T)[0]
+                        for idx, col in enumerate(FEATURE_COLS):
+                            features[col] = imputed_vals[idx]
+                    except Exception as exc:
+                        logger.error(f"{sym} [{timeframe}]: Imputer transform failed ({exc}), rejecting tick.")
+                        continue
+                else:
+                    # Fallback to neutral defaults ONLY if imputer is not yet trained/available
+                    NEUTRAL_DEFAULTS = {
+                        "rsi_14m": 50.0,
+                        "rsi_14d": 50.0,
+                        "rsi_14w": 50.0,
+                        "price_to_52w_high": 1.0,
+                        "vol_ratio": 1.0,
+                        "vol_ratio_1m": 1.0,
+                        "atr_pct": 0.02,
+                        "volume_ratio": 1.0,
+                        "nifty_pcr": 1.0,
+                        "pe_ratio": 20.0,
+                        "debt_to_equity": 0.5,
+                        "vix": 15.0,
+                    }
+                    for col in FEATURE_COLS:
+                        if pd.isna(features[col]):
+                            if col not in NEUTRAL_DEFAULTS:
+                                logger.error(f"{sym} [{timeframe}]: Missing core feature {col!r} without imputer/default. Rejecting tick.")
+                                break
+                            features[col] = NEUTRAL_DEFAULTS[col]
+                    else:
+                        pass
+                    if features[FEATURE_COLS].isna().any():
+                        continue
+
+            available_features = FEATURE_COLS
 
             X = pd.DataFrame([features[available_features]])
 

@@ -117,7 +117,7 @@ class TripleBarrierLabeler:
             # Check which barrier is hit first
             label_value = 0  # Default: vertical barrier (time expiration)
             exit_price = future_prices.iloc[-1]  # Price at vertical barrier
-            exit_time = future_times.iloc[-1]
+            exit_time = future_times.values[-1]
             exit_reason = "vertical"
 
             for j, (future_price, future_time) in enumerate(zip(future_prices, future_times)):

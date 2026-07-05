@@ -1,1 +1,1 @@
-from .zerodha_broker import ZerodhaBrokerAdapter
+# Empty brokers package init. Broker integrations disabled.

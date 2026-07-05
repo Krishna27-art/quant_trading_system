@@ -89,6 +89,11 @@ def _bootstrap_duckdb_schema() -> None:
                 is_degraded BOOLEAN DEFAULT FALSE
             )
         """)
+        # Migration: Ensure existing database contains is_degraded column
+        try:
+            conn.execute("ALTER TABLE equity_history ADD COLUMN IF NOT EXISTS is_degraded BOOLEAN DEFAULT FALSE")
+        except Exception:
+            pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS options_chain (
                 timestamp TIMESTAMP,

@@ -21,9 +21,11 @@ from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
+from sklearn.impute import SimpleImputer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from data_platform.feature_store.macro import extract_historical_macro
 from prediction_intelligence.base_logistic import (
     BaseLogistic,
     EnsembleModel,
@@ -124,7 +126,9 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
             continue
 
         fundamentals = _get_fundamentals(sym)
-        feats = build_features(df, "LONGTERM", extra=fundamentals)
+        macro_df = extract_historical_macro(df.index)
+        extra_data = {**fundamentals, **{col: macro_df[col] for col in macro_df.columns}}
+        feats = build_features(df, "LONGTERM", extra=extra_data)
         label = build_label(df, "LONGTERM")
 
         # Align and drop NaN rows
@@ -166,6 +170,9 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
     save_path = model.save(os.path.join(model_dir, "meta_ensemble_longterm"))
     logger.info(f"LONGTERM MetaEnsemble saved. Metrics: {metrics}")
 
+    imputer = SimpleImputer(strategy="median").fit(X)
+    ModelRegistry(model_dir=model_dir).save_imputer("LONGTERM", imputer)
+
     # Register in singleton so downstream calls within same process pick it up
     ModelRegistry().register("META_LONGTERM_v1", "LONGTERM", model)
 
@@ -184,7 +191,9 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: insufficient daily data — skipping")
             continue
 
-        feats = build_features(df, "SWING", extra={"vix": 15.0, "nifty_pcr": 1.0})
+        macro_df = extract_historical_macro(df.index)
+        extra_data = {col: macro_df[col] for col in macro_df.columns}
+        feats = build_features(df, "SWING", extra=extra_data)
         label = build_label(df, "SWING")
 
         combined = feats[SWING_FEATURES].copy()
@@ -223,6 +232,9 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
     save_dir = model.save(os.path.join(model_dir, "meta_ensemble_swing"))
     logger.info(f"SWING MetaEnsemble saved → {save_dir}. Metrics: {metrics}")
 
+    imputer = SimpleImputer(strategy="median").fit(X)
+    ModelRegistry(model_dir=model_dir).save_imputer("SWING", imputer)
+
     ModelRegistry().register("META_SWING_v1", "SWING", model)
 
 
@@ -240,7 +252,9 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: insufficient intraday data — skipping")
             continue
 
-        feats = build_features(df, "INTRADAY", extra={"vix": 15.0})
+        macro_df = extract_historical_macro(df.index)
+        extra_data = {col: macro_df[col] for col in macro_df.columns}
+        feats = build_features(df, "INTRADAY", extra=extra_data)
         label = build_label(df, "INTRADAY")
 
         combined = feats[INTRADAY_FEATURES].copy()
@@ -278,6 +292,9 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
     metrics   = model.fit(X, y)
     save_path = model.save(os.path.join(model_dir, "meta_ensemble_intraday"))
     logger.info(f"INTRADAY MetaEnsemble saved. Metrics: {metrics}")
+
+    imputer = SimpleImputer(strategy="median").fit(X)
+    ModelRegistry(model_dir=model_dir).save_imputer("INTRADAY", imputer)
 
     ModelRegistry().register("META_INTRADAY_v1", "INTRADAY", model)
 

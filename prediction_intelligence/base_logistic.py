@@ -54,124 +54,24 @@ _DEFAULT_MODEL_DIR = os.environ.get(
 # All three timeframes use this same schema so the live path always knows
 # which columns to pass.
 # ---------------------------------------------------------------------------
-LONGTERM_FEATURES = [
-    "pe_ratio",
-    "debt_to_equity",
-    "ma50_slope",        # 50-week MA slope (direction)
-    "rsi_14w",           # 14-period weekly RSI
-    "vol_ratio",         # recent vol / long-run vol
-    "price_to_52w_high", # proximity to 52-week high
-    "vix",
-]
+from data_platform.features.canonical_builder import (
+    CanonicalFeatureBuilder,
+    LONGTERM_FEATURES,
+    SWING_FEATURES,
+    INTRADAY_FEATURES,
+)
 
-SWING_FEATURES = [
-    "z_score_20d",
-    "nifty_pcr",
-    "rsi_14d",
-    "ma20_slope",
-    "atr_pct",           # ATR as % of price
-    "volume_ratio",      # today vol / 20d avg vol
-    "vix",
-]
-
-INTRADAY_FEATURES = [
-    "vwap_dist",
-    "rsi_14m",
-    "vol_ratio_1m",
-    "range_pct",         # (high-low)/open
-    "momentum_5m",       # 5-bar close momentum
-    "vix",
-]
-
-
-# ---------------------------------------------------------------------------
-# Feature builder — MUST be the single source of truth for both training
-# scripts and the live path. No lookahead: all rolling indicators use
-# values available at bar close only.
-# ---------------------------------------------------------------------------
 
 def build_features(
     df: pd.DataFrame,
     timeframe: str,
-    extra: dict[str, float] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """
     Build a feature DataFrame from an OHLCV candle DataFrame.
-
-    Args:
-        df      : OHLCV DataFrame with columns [timestamp, open, high, low,
-                  close, volume]. Must already be sorted ascending.
-        timeframe: "INTRADAY" | "SWING" | "LONGTERM"
-        extra   : dict of scalar features not derivable from OHLCV
-                  (e.g. {"vix": 14.2, "nifty_pcr": 1.05, "pe_ratio": 22.0}).
-                  Values are broadcast to all rows.
-
-    Returns:
-        DataFrame with canonical feature columns for this timeframe.
-        Rows with NaN (from rolling windows) are *not* dropped here —
-        callers must dropna() before passing to fit/predict.
+    Delegates to CanonicalFeatureBuilder (the single source of truth).
     """
-    extra = extra or {}
-    tf = timeframe.upper()
-    out = pd.DataFrame(index=df.index)
-
-    close  = df["close"]
-    volume = df["volume"] if "volume" in df.columns else pd.Series(1.0, index=df.index)
-    high   = df["high"]
-    low    = df["low"]
-    open_  = df["open"]
-
-    # ── common indicators ───────────────────────────────────────────────────
-    def _rsi(series: pd.Series, window: int = 14) -> pd.Series:
-        delta = series.diff()
-        gain  = delta.clip(lower=0).rolling(window).mean()
-        loss  = (-delta.clip(upper=0)).rolling(window).mean()
-        rs    = gain / loss.replace(0, np.nan)
-        return 100 - (100 / (1 + rs))
-
-    if tf == "INTRADAY":
-        # VWAP distance (cumulative within session — no lookahead)
-        cum_vol = volume.cumsum()
-        cum_val = (close * volume).cumsum()
-        vwap    = cum_val / cum_vol.replace(0, np.nan)
-        out["vwap_dist"]     = (close - vwap) / vwap.replace(0, np.nan)
-        out["rsi_14m"]       = _rsi(close, 14)
-        vol_avg              = volume.rolling(20).mean()
-        out["vol_ratio_1m"]  = volume / vol_avg.replace(0, np.nan)
-        out["range_pct"]     = (high - low) / open_.replace(0, np.nan)
-        out["momentum_5m"]   = close.pct_change(5)
-        out["vix"]           = float(extra.get("vix", 15.0))
-
-    elif tf == "SWING":
-        ma20                 = close.rolling(20).mean()
-        std20                = close.rolling(20).std()
-        out["z_score_20d"]   = (close - ma20) / std20.replace(0, np.nan)
-        out["rsi_14d"]       = _rsi(close, 14)
-        out["ma20_slope"]    = ma20.diff(3) / ma20.shift(3).replace(0, np.nan)
-        atr                  = (high - low).rolling(14).mean()
-        out["atr_pct"]       = atr / close.replace(0, np.nan)
-        vol_avg              = volume.rolling(20).mean()
-        out["volume_ratio"]  = volume / vol_avg.replace(0, np.nan)
-        out["vix"]           = float(extra.get("vix", 15.0))
-        out["nifty_pcr"]     = float(extra.get("nifty_pcr", 1.0))
-
-    elif tf == "LONGTERM":
-        ma50                     = close.rolling(50).mean()
-        out["ma50_slope"]        = ma50.diff(5) / ma50.shift(5).replace(0, np.nan)
-        out["rsi_14w"]           = _rsi(close, 14)
-        short_vol                = close.pct_change().rolling(20).std()
-        long_vol                 = close.pct_change().rolling(100).std()
-        out["vol_ratio"]         = short_vol / long_vol.replace(0, np.nan)
-        rolling_max              = close.rolling(52).max()
-        out["price_to_52w_high"] = close / rolling_max.replace(0, np.nan)
-        out["pe_ratio"]          = float(extra.get("pe_ratio", 20.0))
-        out["debt_to_equity"]    = float(extra.get("debt_to_equity", 0.5))
-        out["vix"]               = float(extra.get("vix", 15.0))
-
-    else:
-        raise ValueError(f"Unknown timeframe: {timeframe!r}. Expected INTRADAY, SWING, or LONGTERM.")
-
-    return out
+    return CanonicalFeatureBuilder.build_features(df=df, timeframe=timeframe, extra=extra)
 
 
 def build_label(
@@ -181,46 +81,69 @@ def build_label(
     sl_pct: float | None = None,
 ) -> pd.Series:
     """
-    Triple-barrier binary label: 1 if target hit before SL, else 0.
-    Uses future prices — call only during training, never in live path.
+    Triple-barrier binary label using TripleBarrierLabeler.
+    Returns a pd.Series of 0 and 1, aligned with df's index.
 
-    Default barriers per timeframe:
-        INTRADAY  : target +1.5%, SL -0.75%
-        SWING     : target +3.0%, SL -1.5%
-        LONGTERM  : target +20%, SL -10%
+    Horizons (in bars):
+      INTRADAY: 10 bars (60m bars proxy)
+      SWING: 15 bars (daily)
+      LONGTERM: 12 bars (weekly)
     """
-    _defaults = {
-        "INTRADAY": (0.015, 0.0075),
-        "SWING":    (0.030, 0.015),
-        "LONGTERM": (0.200, 0.100),
-    }
+    from prediction_intelligence.triple_barrier import TripleBarrierLabeler
+
     tf = timeframe.upper()
-    default_tp, default_sl = _defaults.get(tf, (0.05, 0.025))
+    _defaults = {
+        "INTRADAY": (0.015, -0.0075, 10),
+        "SWING":    (0.030, -0.015, 15),
+        "LONGTERM": (0.200, -0.100, 12),
+    }
+    default_tp, default_sl, default_horizon = _defaults.get(tf, (0.05, -0.025, 10))
+
     tp = target_pct if target_pct is not None else default_tp
-    sl = sl_pct    if sl_pct    is not None else default_sl
+    sl = -abs(sl_pct) if sl_pct is not None else default_sl  # Ensure negative
+    horizon = default_horizon
 
-    close = df["close"]
-    labels = pd.Series(0, index=df.index, dtype=int)
+    # Instantiate labeler
+    labeler = TripleBarrierLabeler(
+        upper_barrier_pct=tp,
+        lower_barrier_pct=sl,
+        vertical_barrier_days=horizon,
+        validate_labels=False,  # Skip hard raise to handle training skew robustly
+    )
 
-    for i in range(len(df) - 1):
-        entry = close.iloc[i]
-        tp_price = entry * (1 + tp)
-        sl_price = entry * (1 - sl)
+    # Resolve timestamps
+    if isinstance(df.index, pd.DatetimeIndex):
+        timestamps = df.index
+    elif "timestamp" in df.columns:
+        timestamps = pd.to_datetime(df["timestamp"])
+    else:
+        timestamps = pd.date_range("1970-01-01", periods=len(df), freq="D")
 
-        hit_tp = hit_sl = False
-        for j in range(i + 1, len(df)):
-            h = df["high"].iloc[j]
-            l = df["low"].iloc[j]
-            if h >= tp_price:
-                hit_tp = True
-                break
-            if l <= sl_price:
-                hit_sl = True
-                break
+    labels_list = labeler.compute_labels(
+        prices=df["close"],
+        timestamps=timestamps,
+        symbol="TRAIN_DF",
+    )
 
-        labels.iloc[i] = 1 if hit_tp and not hit_sl else 0
+    # Map generated labels back to df index. Default is 0.
+    # Map label_value of 1 to 1, and -1 / 0 to 0.
+    out = pd.Series(0, index=df.index, dtype=int)
+    if isinstance(df.index, pd.DatetimeIndex):
+        for lbl in labels_list:
+            if lbl.event_time in out.index:
+                out.loc[lbl.event_time] = 1 if lbl.label_value == 1 else 0
+    elif "timestamp" in df.columns:
+        time_to_idx = {pd.to_datetime(t): idx for idx, t in enumerate(df["timestamp"])}
+        for lbl in labels_list:
+            ts = pd.to_datetime(lbl.event_time)
+            if ts in time_to_idx:
+                out.iloc[time_to_idx[ts]] = 1 if lbl.label_value == 1 else 0
+    else:
+        for i, lbl in enumerate(labels_list):
+            if i < len(out):
+                out.iloc[i] = 1 if lbl.label_value == 1 else 0
 
-    return labels
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -296,21 +219,63 @@ class BaseLogistic:
 
         pipeline = Pipeline(steps)
 
-        # TimeSeriesSplit cross-validation (no peeking at future folds)
+        # Determine purging horizon (V) based on the features/timeframe
+        from data_platform.features.canonical_builder import (
+            INTRADAY_FEATURES,
+            SWING_FEATURES,
+            LONGTERM_FEATURES,
+        )
+        if set(self.feature_names).issubset(set(INTRADAY_FEATURES)):
+            v_barrier = 10
+        elif set(self.feature_names).issubset(set(SWING_FEATURES)):
+            v_barrier = 15
+        else:
+            v_barrier = 12
+
+        # TimeSeriesSplit cross-validation (no peeking at future folds with purging)
         tscv   = TimeSeriesSplit(n_splits=self.n_splits)
         cv_accs: list[float] = []
         for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X)):
-            X_tr, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+            if len(train_idx) > v_barrier:
+                train_idx_purged = train_idx[:-v_barrier]
+            else:
+                train_idx_purged = train_idx
+
+            X_tr, X_val = X.iloc[train_idx_purged], X.iloc[val_idx]
+            y_tr, y_val = y_train.iloc[train_idx_purged], y_train.iloc[val_idx]
+
+            # Check if training fold has at least 2 classes
+            unique_classes = np.unique(y_tr)
+            if len(unique_classes) <= 1:
+                logger.warning(f"  Fold {fold_idx + 1}/{self.n_splits}: only 1 class {unique_classes} in training fold. Skipping fit, using prior.")
+                val_unique = np.unique(y_val)
+                acc = 1.0 if len(val_unique) == 1 and val_unique[0] == unique_classes[0] else 0.5
+                cv_accs.append(acc)
+                continue
+
             pipeline.fit(X_tr, y_tr)
             acc = float((pipeline.predict(X_val) == y_val).mean())
             cv_accs.append(acc)
-            logger.info(f"  Fold {fold_idx + 1}/{self.n_splits}: val_acc={acc:.4f}")
+            logger.info(f"  Fold {fold_idx + 1}/{self.n_splits} (purged {len(train_idx) - len(train_idx_purged)}): val_acc={acc:.4f}")
 
-        mean_cv_acc = float(np.mean(cv_accs))
+        mean_cv_acc = float(np.mean(cv_accs)) if cv_accs else 0.5
         logger.info(f"Mean CV accuracy: {mean_cv_acc:.4f}")
 
         # Final fit on full training data
+        unique_classes = np.unique(y_train)
+        if len(unique_classes) <= 1:
+            logger.warning(f"Only 1 class {unique_classes} present in final training data. Using DummyClassifier fallback.")
+            from sklearn.dummy import DummyClassifier
+            dummy_steps = [
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler",  StandardScaler()),
+            ]
+            if self.use_pca:
+                n = min(self.n_components, len(self.feature_names))
+                dummy_steps.append(("pca", PCA(n_components=n)))
+            dummy_steps.append(("classifier", DummyClassifier(strategy="prior")))
+            pipeline = Pipeline(dummy_steps)
+
         pipeline.fit(X, y_train)
         train_acc = float((pipeline.predict(X) == y_train).mean())
         logger.info(f"Final train accuracy: {train_acc:.4f}")
@@ -546,6 +511,7 @@ class ModelRegistry:
             obj             = super().__new__(cls)
             obj._model_dir  = model_dir or _DEFAULT_MODEL_DIR
             obj._cache: dict[str, BaseLogistic | EnsembleModel] = {}
+            obj._imputers: dict[str, Any] = {}
             cls._instance   = obj
         return cls._instance
 
@@ -631,7 +597,29 @@ class ModelRegistry:
             return SWING_FEATURES
         return LONGTERM_FEATURES
 
+    def save_imputer(self, timeframe: str, imputer: Any) -> str:
+        os.makedirs(self._model_dir, exist_ok=True)
+        path = os.path.join(self._model_dir, f"imputer_{timeframe.lower()}.joblib")
+        joblib.dump(imputer, path)
+        self._imputers[timeframe.upper()] = imputer
+        logger.info(f"Imputer for {timeframe} saved -> {path}")
+        return path
+
+    def get_imputer(self, timeframe: str) -> Any | None:
+        tf = timeframe.upper()
+        if tf in self._imputers:
+            return self._imputers[tf]
+        path = os.path.join(self._model_dir, f"imputer_{tf.lower()}.joblib")
+        if os.path.exists(path):
+            imputer = joblib.load(path)
+            self._imputers[tf] = imputer
+            logger.info(f"Imputer for {tf} loaded from {path}")
+            return imputer
+        return None
+
     def purge(self) -> None:
         """Clear cache — useful in tests."""
         self._cache.clear()
+        if hasattr(self, "_imputers"):
+            self._imputers.clear()
         ModelRegistry._instance = None

@@ -942,27 +942,86 @@ def get_model_metrics() -> list[dict[str, Any]]:
 
 
 def get_performance_metrics() -> list[dict[str, Any]]:
-    """Get portfolio performance metrics from orders and PnL."""
-    query = """
-        WITH order_stats AS (
-            SELECT
-                COUNT(*) as total_orders,
-                SUM(CASE WHEN status = 'FILLED' THEN 1 ELSE 0 END) as filled_orders
-            FROM orders
-        )
-        SELECT
-            'Total Orders' as key,
-            CAST(total_orders AS text) as value,
-            'var(--text)' as color
-        FROM order_stats
-        UNION ALL
-        SELECT
-            'Fill Rate' as key,
-            CASE WHEN total_orders > 0 THEN ROUND((CAST(filled_orders AS float) / total_orders) * 100, 2) || '%' ELSE '0%' END as value,
-            'var(--green)' as color
-        FROM order_stats
-    """
-    return execute_query(query) or []
+    """Get performance metrics from AI predictions and evaluations."""
+    try:
+        import numpy as np
+        query = """
+            SELECT id, horizon, is_correct, confidence, actual_return, entry_price, stop_loss, target_price, actual_outcome
+            FROM predictions
+            WHERE actual_outcome IS NOT NULL AND actual_outcome != 'PENDING' AND actual_outcome != 'OPEN'
+        """
+        rows = execute_query(query) or []
+
+        # Also get total count
+        tot_query = "SELECT COUNT(*) as count FROM predictions"
+        tot_res = execute_query(tot_query)
+        total_count = tot_res[0]["count"] if tot_res else 0
+
+        if not rows:
+            return [
+                {"key": "Total Signals", "value": str(total_count), "color": "var(--text)"},
+                {"key": "Evaluated Signals", "value": "0", "color": "var(--text)"},
+                {"key": "Overall Win Rate", "value": "0.0%", "color": "var(--green)"},
+                {"key": "Brier Score", "value": "0.0000", "color": "var(--yellow)"},
+                {"key": "Avg Signal Return", "value": "0.00%", "color": "var(--text)"},
+                {"key": "Sharpe Ratio", "value": "0.00", "color": "var(--green)"},
+            ]
+
+        evaluated = len(rows)
+        correct = sum(1 for r in rows if r["is_correct"] == 1)
+        win_rate = (correct / evaluated) * 100
+
+        # Timeframe win rates
+        intra_rows = [r for r in rows if r["horizon"] == "INTRADAY"]
+        swing_rows = [r for r in rows if r["horizon"] == "SWING"]
+        long_rows = [r for r in rows if r["horizon"] == "LONGTERM"]
+
+        intra_wr = (sum(1 for r in intra_rows if r["is_correct"] == 1) / len(intra_rows) * 100) if intra_rows else 0.0
+        swing_wr = (sum(1 for r in swing_rows if r["is_correct"] == 1) / len(swing_rows) * 100) if swing_rows else 0.0
+        long_wr = (sum(1 for r in long_rows if r["is_correct"] == 1) / len(long_rows) * 100) if long_rows else 0.0
+
+        # Brier Score
+        brier = float(np.mean([(float(r["confidence"] or 0.0) - float(r["is_correct"] or 0.0)) ** 2 for r in rows]))
+
+        # Returns and Sharpe Ratio
+        returns = [float(r["actual_return"] or 0.0) for r in rows]
+        avg_return = float(np.mean(returns))
+        std_return = float(np.std(returns))
+        sharpe = (avg_return / std_return * np.sqrt(252)) if std_return > 0 else 0.0
+
+        # Average Risk/Reward
+        rr_vals = []
+        for r in rows:
+            entry = r["entry_price"]
+            sl = r["stop_loss"]
+            tp = r["target_price"]
+            if entry and sl and tp and entry != sl:
+                rr = abs(tp - entry) / abs(entry - sl)
+                rr_vals.append(rr)
+        avg_rr = float(np.mean(rr_vals)) if rr_vals else 0.0
+
+        # Maximum Drawdown (simulated simple peak-to-trough on cumulative return index)
+        cum_ret = np.cumsum(returns)
+        cum_max = np.maximum.accumulate(cum_ret)
+        drawdowns = cum_max - cum_ret
+        max_dd = float(np.max(drawdowns)) if len(drawdowns) > 0 else 0.0
+
+        return [
+            {"key": "Total Signals", "value": str(total_count), "color": "var(--text)"},
+            {"key": "Evaluated Signals", "value": str(evaluated), "color": "var(--text)"},
+            {"key": "Overall Win Rate", "value": f"{win_rate:.1f}%", "color": "var(--green)"},
+            {"key": "Intraday Win Rate", "value": f"{intra_wr:.1f}%", "color": "var(--green)"},
+            {"key": "Swing Win Rate", "value": f"{swing_wr:.1f}%", "color": "var(--green)"},
+            {"key": "Longterm Win Rate", "value": f"{long_wr:.1f}%", "color": "var(--green)"},
+            {"key": "Brier Score", "value": f"{brier:.4f}", "color": "var(--yellow)"},
+            {"key": "Avg Signal Return", "value": f"{avg_return:.2f}%", "color": "var(--text)"},
+            {"key": "Avg Risk Reward", "value": f"1:{avg_rr:.2f}", "color": "var(--yellow)"},
+            {"key": "Sharpe Ratio", "value": f"{sharpe:.2f}", "color": "var(--green)"},
+            {"key": "Max Drawdown", "value": f"{max_dd:.2f}%", "color": "var(--red)"},
+        ]
+    except Exception as e:
+        logger.error(f"Failed to calculate performance metrics: {e}", exc_info=True)
+        return []
 
 
 def get_ticker_data() -> list[dict[str, Any]]:

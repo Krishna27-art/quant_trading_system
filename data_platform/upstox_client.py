@@ -114,9 +114,9 @@ OPTIONS_SL_CATEGORIES  = ["OI_GAINERS", "OI_LOSERS", "PRICE_GAINERS", "PRICE_LOS
 # Auth
 # ---------------------------------------------------------------------------
 def _auth() -> dict:
-    token = os.getenv("UPSTOX_BROKER_ACCESS_TOKEN", "")
+    token = os.getenv("UPSTOX_BROKER_ACCESS_TOKEN") or os.getenv("UPSTOX_ACCESS_TOKEN", "")
     if not token:
-        raise RuntimeError("UPSTOX_BROKER_ACCESS_TOKEN not set in .env")
+        raise RuntimeError("UPSTOX_BROKER_ACCESS_TOKEN or UPSTOX_ACCESS_TOKEN not set in .env")
     return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
 

@@ -91,19 +91,20 @@ def get_instrument_key(symbol: str) -> str | None:
     return info["instrument_key"] if info else None
 
 
+class UpstoxConfig:
+    def __init__(self, token: str):
+        self.access_token = token
+
+
 def get_upstox_client_config():
     """Builds and returns the upstox_client configuration with access token."""
     from dotenv import load_dotenv
 
     load_dotenv()
 
-    import upstox_client
-
-    token = os.getenv("UPSTOX_ACCESS_TOKEN")
+    token = os.getenv("UPSTOX_ACCESS_TOKEN") or os.getenv("UPSTOX_BROKER_ACCESS_TOKEN")
     if not token:
-        logger.error("UPSTOX_ACCESS_TOKEN is missing in .env")
+        logger.error("UPSTOX_ACCESS_TOKEN or UPSTOX_BROKER_ACCESS_TOKEN is missing in .env")
         return None
 
-    config = upstox_client.Configuration()
-    config.access_token = token
-    return config
+    return UpstoxConfig(token)

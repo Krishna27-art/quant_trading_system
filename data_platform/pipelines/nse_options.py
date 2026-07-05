@@ -162,8 +162,36 @@ class NSEOptionsPipeline:
 
     def _get_nearest_expiry(self, symbol: str) -> str | None:
         """
-        Mock implementation to get nearest expiry date.
-        In production, this would fetch from Upstox API.
+        Fetch real expiries from Upstox and return the nearest valid one.
+        Falls back to the nearest upcoming Thursday if Upstox API query fails.
         """
-        # Return a mock expiry date for testing
-        return "2026-06-30"
+        from data_platform.upstox_client import get_option_expiries
+        from utils.upstox_helper import get_instrument_key
+        
+        underlying_key = get_instrument_key(symbol)
+        if not underlying_key:
+            if symbol == "NIFTY":
+                underlying_key = "NSE_INDEX|Nifty 50"
+            elif symbol == "BANKNIFTY":
+                underlying_key = "NSE_INDEX|Nifty Bank"
+            else:
+                underlying_key = None
+
+        if underlying_key:
+            try:
+                expiries = get_option_expiries(underlying_key)
+                if expiries:
+                    return expiries[0]
+            except Exception as e:
+                logger.warning(f"Failed to fetch option expiries for {symbol}: {e}")
+
+        # Fallback to nearest upcoming Thursday from today
+        from datetime import date, timedelta
+        today = date.today()
+        # Thursday is weekday 3 (Mon is 0, Sun is 6)
+        days_ahead = 3 - today.weekday()
+        if days_ahead < 0:
+            # If Thursday was already this week, target next week's Thursday
+            days_ahead += 7
+        nearest_thursday = today + timedelta(days_ahead)
+        return nearest_thursday.isoformat()

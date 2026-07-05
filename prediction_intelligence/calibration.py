@@ -20,7 +20,11 @@ from utils.logger import get_logger
 logger = get_logger("calibration")
 
 
-# Simple in-memory cache for calibrators (for production, use Redis/file storage)
+import os
+import joblib
+from pathlib import Path
+
+MODEL_DIR = os.getenv("MODEL_DIR", "models/saved")
 _CALIBRATOR_CACHE: dict[str, CalibratedClassifierCV | IsotonicRegression] = {}
 
 
@@ -40,6 +44,17 @@ def calibrate_or_passthrough(win_prob: float, timeframe: str) -> float:
     """
     calibrator_key = f"{timeframe}_calibrator"
     calibrator = _CALIBRATOR_CACHE.get(calibrator_key)
+
+    if calibrator is None:
+        # Attempt to load from disk
+        path = Path(MODEL_DIR) / f"calibrator_{timeframe.lower()}.joblib"
+        if path.exists():
+            try:
+                calibrator = joblib.load(path)
+                _CALIBRATOR_CACHE[calibrator_key] = calibrator
+                logger.info(f"Loaded calibrator for {timeframe} from disk: {path}")
+            except Exception as e:
+                logger.error(f"Failed to load calibrator from {path}: {e}")
 
     if calibrator is None:
         # Cold start: no calibrator fitted yet
@@ -94,6 +109,15 @@ def fit_calibrator(
         calibrator_key = f"{timeframe}_calibrator"
         _CALIBRATOR_CACHE[calibrator_key] = calibrator
 
+        # Save to disk
+        path = Path(MODEL_DIR) / f"calibrator_{timeframe.lower()}.joblib"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            joblib.dump(calibrator, path)
+            logger.info(f"Saved calibrator for {timeframe} to disk: {path}")
+        except Exception as e:
+            logger.error(f"Failed to save calibrator to {path}: {e}")
+
         logger.info(f"Fitted {method} calibrator for {timeframe} on {len(raw_probs)} samples")
 
     except Exception as e:
@@ -102,4 +126,7 @@ def fit_calibrator(
 
 def has_calibrator(timeframe: str) -> bool:
     """Check if a calibrator exists for the given timeframe."""
-    return f"{timeframe}_calibrator" in _CALIBRATOR_CACHE
+    if f"{timeframe}_calibrator" in _CALIBRATOR_CACHE:
+        return True
+    path = Path(MODEL_DIR) / f"calibrator_{timeframe.lower()}.joblib"
+    return path.exists()

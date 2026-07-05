@@ -1,10 +1,7 @@
 import unittest.mock as mock
-
-# Note: data.fred_macro module is deprecated and gitignored
-# This test should be updated to use data_platform.pipelines.india_macro instead
-# For now, commenting out to prevent import errors
-
-from data.fred_macro import fetch_fred_observation, get_macro_indicators
+import pandas as pd
+from data_platform.pipelines.india_macro import get_macro_indicators
+from data_platform.pipelines.macro_fred import FREDDataPipeline
 
 
 def test_fred_observation_parsing():
@@ -19,15 +16,17 @@ def test_fred_observation_parsing():
         }
         mock_get.return_value = mock_response
 
-        val = fetch_fred_observation("INDCPIALLMINMEI", "mock_key")
-        assert val == 5.21
+        # Test FREDDataPipeline
+        pipeline = FREDDataPipeline(api_key="mock_key")
+        df = pipeline.fetch_series("INDCPIALLMINMEI")
+        assert len(df) == 2
+        assert df["value"].iloc[0] == 5.10  # sorted asc by date
+        assert df["value"].iloc[1] == 5.21
 
 
 def test_macro_indicators_consolidation():
-    # If FRED_API_KEY is not set, it should fallback to defaults
-    with mock.patch.dict("os.environ", {"FRED_API_KEY": ""}):
-        indicators = get_macro_indicators()
-        assert "india_cpi" in indicators
-        assert "repo_rate" in indicators
-        assert indicators["repo_rate"] == 6.50
-        assert indicators["india_cpi"] == 5.0
+    indicators = get_macro_indicators()
+    assert "india_cpi" in indicators
+    assert "repo_rate" in indicators
+    assert indicators["repo_rate"] == 6.50
+    assert indicators["india_cpi"] == 5.0

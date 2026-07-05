@@ -423,6 +423,10 @@ def generate_predictions_for_timeframe(
 
             direction, direction_votes = infer_direction_from_features(features, timeframe)
 
+            # Invert probability if trade direction is SELL (since model outputs P(long/upside wins))
+            if direction == "SELL":
+                win_prob = 1.0 - win_prob
+
             # Hard filter: only emit high-confidence predictions
             # Do this AFTER direction logic, so direction isn't dead
             if win_prob < MIN_WIN_PROB:

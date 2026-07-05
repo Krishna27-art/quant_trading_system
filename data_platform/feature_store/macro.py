@@ -38,6 +38,7 @@ def extract_macro_features() -> dict:
         if "^INDIAVIX" in close_data.columns:
             vix_val = close_data["^INDIAVIX"].dropna().iloc[-1]
             features["vix_level"] = round(float(vix_val), 2)
+            features["vix"] = round(float(vix_val), 2)
             if vix_val > 25:
                 features["market_regime"] = 2   # Risk-Off
             elif vix_val > 20:

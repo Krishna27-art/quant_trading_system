@@ -351,6 +351,7 @@ def create_tables():
             id TEXT PRIMARY KEY,
             symbol TEXT NOT NULL,
             model_version TEXT,
+            feature_version TEXT,
             features_used TEXT,
             prediction TEXT NOT NULL,
             horizon TEXT NOT NULL,
@@ -524,6 +525,12 @@ def create_tables():
     """)
     execute_write("CREATE INDEX IF NOT EXISTS idx_index_ticks_name ON index_ticks(name)")
     execute_write("CREATE INDEX IF NOT EXISTS idx_index_ticks_time ON index_ticks(timestamp)")
+
+    # Run migration to add feature_version column if it doesn't exist
+    try:
+        execute_write("ALTER TABLE predictions ADD COLUMN feature_version TEXT")
+    except Exception:
+        pass
 
     logger.info("Database tables created successfully")
 

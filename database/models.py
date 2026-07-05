@@ -11,6 +11,7 @@ class Prediction(Base):
     id = Column(String(50), primary_key=True)
     symbol = Column(String(20), nullable=False)
     model_version = Column(String(50))
+    feature_version = Column(String(50))
     features_used = Column("features_used", Text)
     prediction = Column("prediction", String(20), nullable=False)
     horizon = Column("horizon", String(20), nullable=False)

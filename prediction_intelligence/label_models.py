@@ -77,6 +77,18 @@ class Label(BaseModel):
             datetime: lambda v: v.isoformat(),
         }
 
+    def __init__(self, **data: Any):
+        super().__init__(**data)
+        if not self.checksum:
+            self.checksum = self._compute_checksum()
+
+    def _compute_checksum(self) -> str:
+        """Compute SHA256 checksum for PIT integrity audit."""
+        import hashlib
+        date_str = self.label_date.isoformat() if isinstance(self.label_date, datetime) else str(self.label_date)
+        raw = f"{self.symbol}{self.label_type}{date_str}{self.version}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
     def is_valid(self) -> bool:
         """
         Basic validation check for the label.

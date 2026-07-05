@@ -38,7 +38,8 @@ from prediction_intelligence.base_logistic import (
     LONGTERM_FEATURES, 
     SWING_FEATURES,
     ModelRegistry,
-    build_features as canonical_build_features
+    build_features as canonical_build_features,
+    FEATURE_SCHEMA_VERSION
 )
 from prediction_intelligence.calibration import calibrate_or_passthrough
 from prediction_intelligence.signal_adapter import SignalPrediction
@@ -238,15 +239,6 @@ def compute_atr(df: pd.DataFrame, window: int) -> pd.Series:
         (low - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.rolling(window).mean()
-
-
-def compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
-    """Wilder RSI."""
-    delta = series.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1 / window, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1 / window, adjust=False).mean()
-    rs = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
 
 
 def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[str, dict[str, float]]:
@@ -520,6 +512,7 @@ def generate_predictions_for_timeframe(
                 "target_price": target,
                 "predicted_probability": round(win_prob, 4),
                 "model_version": model_version,
+                "feature_version": FEATURE_SCHEMA_VERSION,
                 "features_json": json.dumps(feat_summary),
             })
 
@@ -635,6 +628,7 @@ def run():
                 target_price=sig["target_price"],
                 confidence=sig["predicted_probability"],
                 model_version=sig["model_version"],
+                feature_version=sig["feature_version"],
                 features_used=sig["features_json"],
                 actual_outcome="OPEN",
                 prediction_time=now,

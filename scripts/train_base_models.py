@@ -61,7 +61,8 @@ def _load_daily(symbol: str, period: str = "3y") -> pd.DataFrame:
         "High": "high", "Low": "low",
         "Close": "close", "Volume": "volume",
     })
-    return df.sort_values("timestamp").reset_index(drop=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+    return df.set_index("timestamp", drop=False).sort_index()
 
 
 def _load_weekly(symbol: str, period: str = "5y") -> pd.DataFrame:
@@ -76,12 +77,13 @@ def _load_weekly(symbol: str, period: str = "5y") -> pd.DataFrame:
         "High": "high", "Low": "low",
         "Close": "close", "Volume": "volume",
     })
-    return df.sort_values("timestamp").reset_index(drop=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+    return df.set_index("timestamp", drop=False).sort_index()
 
 
 def _load_intraday(symbol: str) -> pd.DataFrame:
-    # yfinance caps 1m history at 8 days — use 60m as proxy for training
-    raw = yf.download(f"{symbol}.NS", period="60d", interval="60m",
+    # Use real 1-minute data (8-day limit) for true timescale parity
+    raw = yf.download(f"{symbol}.NS", period="8d", interval="1m",
                       progress=False, auto_adjust=True)
     if raw.empty:
         return pd.DataFrame()
@@ -93,7 +95,7 @@ def _load_intraday(symbol: str) -> pd.DataFrame:
         "Close": "close", "Volume": "volume",
     })
     df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
-    return df.sort_values("timestamp").reset_index(drop=True)
+    return df.set_index("timestamp", drop=False).sort_index()
 
 
 def _get_fundamentals(symbol: str) -> dict[str, float]:
@@ -126,7 +128,7 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
             continue
 
         fundamentals = _get_fundamentals(sym)
-        macro_df = extract_historical_macro(df.index)
+        macro_df = extract_historical_macro(pd.DatetimeIndex(df["timestamp"]))
         extra_data = {**fundamentals, **{col: macro_df[col] for col in macro_df.columns}}
         feats = build_features(df, "LONGTERM", extra=extra_data)
         label = build_label(df, "LONGTERM")
@@ -191,7 +193,7 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: insufficient daily data — skipping")
             continue
 
-        macro_df = extract_historical_macro(df.index)
+        macro_df = extract_historical_macro(pd.DatetimeIndex(df["timestamp"]))
         extra_data = {col: macro_df[col] for col in macro_df.columns}
         feats = build_features(df, "SWING", extra=extra_data)
         label = build_label(df, "SWING")
@@ -252,7 +254,7 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: insufficient intraday data — skipping")
             continue
 
-        macro_df = extract_historical_macro(df.index)
+        macro_df = extract_historical_macro(pd.DatetimeIndex(df["timestamp"]))
         extra_data = {col: macro_df[col] for col in macro_df.columns}
         feats = build_features(df, "INTRADAY", extra=extra_data)
         label = build_label(df, "INTRADAY")

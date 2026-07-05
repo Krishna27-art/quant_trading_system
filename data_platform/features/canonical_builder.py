@@ -23,8 +23,6 @@ LONGTERM_FEATURES = [
     "rsi_14w",
     "vol_ratio",
     "price_to_52w_high",
-    "pe_ratio",
-    "debt_to_equity",
     "vix",
 ]
 
@@ -69,8 +67,8 @@ class CanonicalFeatureBuilder:
     @classmethod
     def _rsi(cls, series: pd.Series, window: int = 14) -> pd.Series:
         delta = series.diff()
-        gain = delta.clip(lower=0).rolling(window).mean()
-        loss = (-delta.clip(upper=0)).rolling(window).mean()
+        gain = delta.clip(lower=0).ewm(alpha=1/window, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1/window, adjust=False).mean()
         rs = gain / loss.replace(0, np.nan)
         return 100 - (100 / (1 + rs))
 

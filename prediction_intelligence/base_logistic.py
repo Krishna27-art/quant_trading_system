@@ -61,6 +61,9 @@ from data_platform.features.canonical_builder import (
     INTRADAY_FEATURES,
 )
 
+FEATURE_SCHEMA_VERSION = "v1.1.0"
+
+
 
 def build_features(
     df: pd.DataFrame,

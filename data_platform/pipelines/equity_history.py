@@ -145,7 +145,7 @@ class EquityHistoryPipeline:
                 if "Turnover₹" not in df.columns and "turnover" not in df.columns:
                     df["Turnover₹"] = df["TotalTradedQuantity"] * df["ClosePrice"]
                 if "No.ofTrades" not in df.columns and "num_trades" not in df.columns:
-                    df["No.ofTrades"] = 0
+                    df["No.ofTrades"] = float("nan")
 
             # Rename columns to standard format
             column_mapping = {
@@ -224,6 +224,9 @@ class EquityHistoryPipeline:
 
             # Set date as index again after validation
             df = df.set_index("date")
+
+            # Append is_degraded flag so fallback data is queryable in downstream stores
+            df["is_degraded"] = (result.source != "nselib")
 
             return df
 
@@ -311,7 +314,8 @@ class EquityHistoryPipeline:
                 "symbol": self.config.symbol,
                 "from_date": self.config.from_date,
                 "to_date": self.config.to_date,
-                "source": "NSE",
+                "source": result.source,
+                "degraded": (result.source != "nselib"),
                 "partitioned": True,
             }
 
@@ -326,7 +330,7 @@ class EquityHistoryPipeline:
             checksum = compute_checksum(df)
             write_lineage_record(
                 dataset=f"{self.config.symbol}_equity_history",
-                source="NSE",
+                source=result.source,
                 row_count=len(df),
                 checksum=checksum,
             )
@@ -369,6 +373,7 @@ class EquityHistoryPipeline:
                 "low": "low",
                 "close": "close",
                 "volume": "volume",
+                "is_degraded": "is_degraded",
             }
 
             # Select and rename columns
@@ -438,8 +443,12 @@ class EquityHistoryPipeline:
                         .astype(float)
                     )
 
-                con.register("temp_df", df_reset)
-                con.execute(f"INSERT INTO {table_name} SELECT * FROM temp_df")
+                # Only insert columns that exist in the target table to avoid schema mismatches
+                target_cols = [c[1] for c in con.execute(f"PRAGMA table_info({table_name})").fetchall()]
+                common_cols = [col for col in df_reset.columns if col in target_cols]
+                con.register("temp_df", df_reset[common_cols])
+                cols_str = ", ".join(common_cols)
+                con.execute(f"INSERT INTO {table_name} ({cols_str}) SELECT {cols_str} FROM temp_df")
                 con.unregister("temp_df")
 
                 # Verify insertion

@@ -160,6 +160,8 @@ class NSELibSource(NSEDataSource):
         try:
             self.logger.info("Fetching FII/DII data from nselib")
 
+            # Apply rate limiting
+            get_nse_rate_limiter().wait_if_needed_fii_dii()
             df = capital_market.fii_dii_market_activity()
 
             if df is None or df.empty:
@@ -278,6 +280,8 @@ class NSELibSource(NSEDataSource):
         try:
             self.logger.info("Fetching trading calendar from nselib")
 
+            # Apply rate limiting
+            get_nse_rate_limiter().wait_if_needed_trading_calendar()
             df = capital_market.trading_holiday_list()
 
             if df is None or df.empty:
@@ -328,6 +332,8 @@ class NSELibSource(NSEDataSource):
         try:
             self.logger.info("Fetching security master from nselib")
 
+            # Apply rate limiting
+            get_nse_rate_limiter().wait_if_needed_security_master()
             df = capital_market.equity_list()
 
             if df is None or df.empty:

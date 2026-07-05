@@ -1700,6 +1700,7 @@ CREATE TABLE IF NOT EXISTS equity_history (
     volume UInt64,
     vwap Float64,
     trades UInt32,
+    is_degraded UInt8 DEFAULT 0,
     created_at DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 PARTITION BY toYYYY(date)

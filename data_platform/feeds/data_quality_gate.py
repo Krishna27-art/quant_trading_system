@@ -152,6 +152,15 @@ class DataQualityGate:
                 reasons.append(RejectionReason.STALE_TICK)
                 details["age_seconds"] = round(age, 3)
 
+            # Absolute wall-clock staleness check (handles system-wide feed stalls in production)
+            import time as _time
+            wall_clock_age = _time.time() - tick_timestamp
+            if abs(wall_clock_age) < 86400.0:  # Only for contemporary ticks (within 24h)
+                if wall_clock_age > self.max_staleness_s:
+                    if RejectionReason.STALE_TICK not in reasons:
+                        reasons.append(RejectionReason.STALE_TICK)
+                    details["wall_clock_age_seconds"] = round(wall_clock_age, 3)
+
             # 2) basic price sanity ───────────────────────────
             if ltp < 0 or bid < 0 or ask < 0:
                 reasons.append(RejectionReason.NEGATIVE_PRICE)

@@ -11,6 +11,7 @@ import pandas as pd
 import yfinance as yf
 
 from data_platform.sources.ingestion.interface import IngestionResult, NSEDataSource
+from data_platform.sources.ingestion.rate_limiter import RateLimiter
 from utils.logger import get_logger
 from utils.time_utils import now_ist
 
@@ -26,6 +27,8 @@ class ScraperSource(NSEDataSource):
         """Initialize Scraper source."""
         super().__init__("scraper")
         self.logger = logger
+        # Conservative limit for Yahoo Finance calls: 30 calls per minute
+        self.rate_limiter = RateLimiter(max_calls=30, time_window_seconds=60)
 
     def fetch_equity_history(self, symbol: str, from_date: str, to_date: str) -> IngestionResult:
         """
@@ -35,6 +38,10 @@ class ScraperSource(NSEDataSource):
 
         try:
             self.logger.info(f"Fetching equity history for {symbol} via yfinance")
+            
+            # Apply rate limiting to avoid IP bans from Yahoo Finance
+            self.rate_limiter.wait_if_needed("yfinance")
+
             yf_symbol = f"{symbol}.NS"
             # yfinance expects date in YYYY-MM-DD format
             df = yf.download(yf_symbol, start=from_date, end=to_date, progress=False)

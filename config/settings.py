@@ -85,7 +85,8 @@ def _bootstrap_duckdb_schema() -> None:
                 high DOUBLE,
                 low DOUBLE,
                 close DOUBLE,
-                volume BIGINT
+                volume BIGINT,
+                is_degraded BOOLEAN DEFAULT FALSE
             )
         """)
         conn.execute("""

@@ -135,6 +135,18 @@ class NSERateLimiter(RateLimiter):
         """Acquire permission for corporate actions call."""
         return self.acquire("corporate_actions")
 
+    def acquire_fii_dii(self) -> bool:
+        """Acquire permission for FII/DII call."""
+        return self.acquire("fii_dii")
+
+    def acquire_trading_calendar(self) -> bool:
+        """Acquire permission for trading calendar call."""
+        return self.acquire("trading_calendar")
+
+    def acquire_security_master(self) -> bool:
+        """Acquire permission for security master call."""
+        return self.acquire("security_master")
+
     def wait_if_needed_equity_history(self) -> None:
         """Wait if equity history rate limit would be exceeded."""
         self.wait_if_needed("equity_history")
@@ -146,6 +158,18 @@ class NSERateLimiter(RateLimiter):
     def wait_if_needed_corporate_actions(self) -> None:
         """Wait if corporate actions rate limit would be exceeded."""
         self.wait_if_needed("corporate_actions")
+
+    def wait_if_needed_fii_dii(self) -> None:
+        """Wait if FII/DII rate limit would be exceeded."""
+        self.wait_if_needed("fii_dii")
+
+    def wait_if_needed_trading_calendar(self) -> None:
+        """Wait if trading calendar rate limit would be exceeded."""
+        self.wait_if_needed("trading_calendar")
+
+    def wait_if_needed_security_master(self) -> None:
+        """Wait if security master rate limit would be exceeded."""
+        self.wait_if_needed("security_master")
 
 
 # Global rate limiter instance

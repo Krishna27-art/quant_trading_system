@@ -10,6 +10,7 @@ import pandas as pd
 from nselib import capital_market
 
 from data_platform.sources.ingestion.interface import IngestionResult, NSEDataSource
+from data_platform.sources.ingestion.rate_limiter import get_nse_rate_limiter
 from utils.logger import get_logger
 from utils.time_utils import now_ist
 
@@ -43,8 +44,8 @@ class NSELibSource(NSEDataSource):
         start_time = time.time()
 
         try:
-            self.logger.info(f"Fetching equity history for {symbol} from nselib")
-
+            # Apply rate limiting
+            get_nse_rate_limiter().wait_if_needed_equity_history()
             df = capital_market.equity_history(symbol=symbol, from_date=from_date, to_date=to_date)
 
             if df is None or df.empty:
@@ -104,6 +105,8 @@ class NSELibSource(NSEDataSource):
         try:
             self.logger.info(f"Fetching options chain for {symbol} from nselib")
 
+            # Apply rate limiting
+            get_nse_rate_limiter().wait_if_needed_options_chain()
             if expiry_date:
                 df = capital_market.equity_option_chain(symbol=symbol, expiry_date=expiry_date)
             else:
@@ -213,6 +216,8 @@ class NSELibSource(NSEDataSource):
         try:
             self.logger.info("Fetching corporate actions from nselib")
 
+            # Apply rate limiting
+            get_nse_rate_limiter().wait_if_needed_corporate_actions()
             df = capital_market.corporate_actions()
 
             if df is None or df.empty:

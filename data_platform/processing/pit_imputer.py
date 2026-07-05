@@ -61,12 +61,43 @@ class PITImputer:
 
         features = [col for col in df.columns if col not in ["timestamp", "asset", "sector"]]
 
-        # Group by asset to apply forward fill on price features and group-specific ffills
-        # We classify features based on naming:
-        # Price features: contains 'price', 'close', 'open', 'high', 'low', 'adj'
-        # Volume features: contains 'volume', 'qty'
-        # Ratio features: contains 'ratio', 'pe', 'pb', 'ps', 'margin', 'pct'
+        # 1. Contemporaneous cross-sectional imputation (Volume and Ratios)
+        # For each feature, compute the contemporaneous median per timestamp
+        if "timestamp" in df.columns:
+            for col in features:
+                col_lower = col.lower()
+                is_price = any(p in col_lower for p in ["price", "close", "open", "high", "low", "adj"])
+                is_volume = any(v in col_lower for v in ["volume", "qty"])
+                
+                if not is_price:
+                    if is_volume:
+                        # Group by timestamp and compute cross-sectional median
+                        cs_medians = df.groupby("timestamp")[col].transform("median")
+                        # Fill NaNs with cross-sectional median
+                        df[col] = df[col].fillna(cs_medians)
+                        # Fallback to historical fitted global median if still NaN
+                        fallback_val = self.global_medians.get(col, 0.0)
+                        df[col] = df[col].fillna(fallback_val)
+                    else:
+                        # Ratio feature: Sector-level cross-sectional median, then global cross-sectional median
+                        if "sector" in df.columns:
+                            cs_sector_medians = df.groupby(["timestamp", "sector"])[col].transform("median")
+                            df[col] = df[col].fillna(cs_sector_medians)
+                        
+                        cs_medians = df.groupby("timestamp")[col].transform("median")
+                        df[col] = df[col].fillna(cs_medians)
+                        
+                        # Fallback to sector/global historical medians if still NaN
+                        nan_mask = df[col].isna()
+                        if nan_mask.any():
+                            for idx, row in df[nan_mask].iterrows():
+                                sector = row["sector"] if "sector" in df.columns else None
+                                fill_val = self.sector_medians.get(f"{sector}_{col}") if sector else None
+                                if fill_val is None or pd.isna(fill_val):
+                                    fill_val = self.global_medians.get(col, 0.0)
+                                df.at[idx, col] = fill_val
 
+        # 2. Time-series forward fill (Price features) per asset
         result_dfs = []
         for _asset, group in df.groupby("asset"):
             group = (
@@ -77,27 +108,12 @@ class PITImputer:
 
             for col in features:
                 col_lower = col.lower()
-                is_price = any(
-                    p in col_lower for p in ["price", "close", "open", "high", "low", "adj"]
-                )
-                is_volume = any(v in col_lower for v in ["volume", "qty"])
-
+                is_price = any(p in col_lower for p in ["price", "close", "open", "high", "low", "adj"])
                 if is_price:
                     # Forward-fill capped at ffill_limit
                     group[col] = group[col].ffill(limit=self.ffill_limit)
-                    # If still NaN, it will be dropped or filled with global median
+                    # If still NaN, it will be dropped or filled with historical global median
                     group = group.dropna(subset=[col])
-                elif is_volume:
-                    # Fill with cross-sectional median (if available in global_medians)
-                    median_val = self.global_medians.get(col, 0.0)
-                    group[col] = group[col].fillna(median_val)
-                else:
-                    # Ratio / other feature: Sector-level median fill, then global median fill
-                    sector = group["sector"].iloc[0] if "sector" in group.columns else None
-                    fill_val = self.sector_medians.get(f"{sector}_{col}") if sector else None
-                    if fill_val is None or pd.isna(fill_val):
-                        fill_val = self.global_medians.get(col, 0.0)
-                    group[col] = group[col].fillna(fill_val)
 
             result_dfs.append(group)
 

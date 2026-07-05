@@ -15,17 +15,103 @@ logger = get_structured_logger("multiprocess_scheduler")
 # --- Process Workers ---
 
 
+_quotes_cache = {}
+_last_fetch_time = 0.0
+
+
+async def upstox_ws_connect(symbols: list[str], on_tick) -> None:
+    """Simulates a live WebSocket feed using periodic batch REST polls."""
+    from data_platform.upstox_client import get_bulk_quotes
+    from data_platform.feeds.feed_manager import TickData, FeedTier
+
+    clean_symbols = [s.replace(".NS", "").upper() for s in symbols]
+    logger.info("Initializing Upstox WebSocket simulator...")
+
+    while True:
+        try:
+            now = time.time()
+            quotes = get_bulk_quotes(clean_symbols)
+            for sym in symbols:
+                clean_sym = sym.replace(".NS", "").upper()
+                quote = quotes.get(clean_sym)
+                if quote:
+                    tick = TickData(
+                        symbol=sym,
+                        ltp=float(quote["last_price"] or 0.0),
+                        bid=float(quote.get("bid") or quote["last_price"] or 0.0),
+                        ask=float(quote.get("ask") or quote["last_price"] or 0.0),
+                        volume=int(quote["volume"] or 0),
+                        timestamp=float(quote["timestamp"] or now),
+                        received_at=now,
+                        feed_tier=FeedTier.PRIMARY
+                    )
+                    on_tick(tick)
+            await asyncio.sleep(2.0)
+        except Exception as e:
+            logger.error(f"Upstox WS simulator error: {e}")
+            await asyncio.sleep(5.0)
+
+
+def upstox_poll_tick(symbol: str) -> TickData | None:
+    """Polls a single symbol using cached batch REST responses to avoid rate limits."""
+    global _quotes_cache, _last_fetch_time
+    now = time.time()
+
+    # Fetch all symbols at once if cache is older than 2 seconds
+    if now - _last_fetch_time > 2.0 or not _quotes_cache:
+        try:
+            from data_platform.upstox_client import get_bulk_quotes
+            from config.universe import NSE_UNIVERSE
+            symbols_list = [s["symbol"] for s in NSE_UNIVERSE]
+            _quotes_cache = get_bulk_quotes(symbols_list)
+            _last_fetch_time = now
+        except Exception as e:
+            logger.error(f"Failed to fetch bulk quotes for REST fallback: {e}")
+            return None
+
+    sym_clean = symbol.replace(".NS", "").upper()
+    quote = _quotes_cache.get(sym_clean)
+    if not quote:
+        return None
+
+    from data_platform.feeds.feed_manager import TickData, FeedTier
+    return TickData(
+        symbol=symbol,
+        ltp=float(quote["last_price"] or 0.0),
+        bid=float(quote.get("bid") or quote["last_price"] or 0.0),
+        ask=float(quote.get("ask") or quote["last_price"] or 0.0),
+        volume=int(quote["volume"] or 0),
+        timestamp=float(quote["timestamp"] or now),
+        received_at=now,
+        feed_tier=FeedTier.FALLBACK
+    )
+
+
 def run_feed_manager():
     """Run the unified FeedManager instead of separate feed processes."""
-    logger.info("Starting Feed Manager Process...")
+    logger.info("Starting Feed Manager Process with Upstox Integration...")
+
+    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+
+    # on_tick publishes to 'live_ticks' stream
+    def on_tick_callback(tick: TickData):
+        try:
+            # Publish to Redis stream
+            redis_client.xadd("live_ticks", tick.to_dict())
+            logger.debug(f"Tick published to Redis: {tick.symbol} @ {tick.ltp}")
+        except Exception as e:
+            logger.error(f"Failed to publish tick to Redis: {e}")
 
     # Create a FeedManager instance
     feed_manager = FeedManager(
-        staleness_threshold_s=10.0,
+        ws_connect_fn=upstox_ws_connect,
+        rest_poll_fn=upstox_poll_tick,
+        staleness_threshold_s=15.0,  # 15s threshold
         max_consecutive_failures=5,
-        rest_poll_interval_s=1.0,
-        on_tick=lambda tick: logger.debug(f"Tick received: {tick.symbol} @ {tick.ltp}"),
+        rest_poll_interval_s=2.0,
+        on_tick=on_tick_callback,
         on_failover=lambda old, new: logger.warning(f"Feed failover: {old} -> {new}"),
+        redis_client=redis_client
     )
 
     # Subscribe to symbols
@@ -75,10 +161,12 @@ def run_inference_loop():
                     if messages:
                         last_id = messages[-1][0].decode()
 
-            # Run the full prediction pipeline (writes to DB directly)
-            logger.info("Inference trigger: running generate_live_predictions...")
-            _run_predictions()
-            logger.info("Inference cycle complete.")
+                # Run the full prediction pipeline (writes to DB directly)
+                logger.info("Inference trigger: running generate_live_predictions on new tick...")
+                _run_predictions()
+                logger.info("Inference cycle complete.")
+            else:
+                logger.debug("No new ticks received in 60s heartbeat window.")
 
         except Exception as e:
             logger.error(f"Error in inference worker: {e}")
@@ -167,12 +255,50 @@ async def post_trade_analysis_job():
     logger.info("Post-Trade Reflection generated.")
 
 
+async def daily_snapshot_pruning_job():
+    logger.info("Running Daily Snapshot Pruning Job...")
+    try:
+        from data_platform.sources.ingestion.raw_bronze import RawBronzeLayer
+        from utils.versioned_datasets import VersionedDataset
+        from config.universe import NSE_UNIVERSE
+        from config.settings import BRONZE_EQUITY_HISTORY_DIR
+        
+        bronze_layer = RawBronzeLayer()
+        versioned_store = VersionedDataset(BRONZE_EQUITY_HISTORY_DIR)
+        
+        for stock in NSE_UNIVERSE:
+            sym = stock["symbol"]
+            dataset_name = f"equity_history_{sym}"
+            
+            # Prune bronze raw responses
+            try:
+                deleted_bronze = bronze_layer.delete_old_snapshots(dataset_name, keep_count=10)
+                if deleted_bronze > 0:
+                    logger.info(f"Pruned {deleted_bronze} old raw bronze snapshots for {dataset_name}")
+            except Exception as e:
+                logger.error(f"Failed to prune raw bronze snapshots for {dataset_name}: {e}")
+                
+            # Prune versioned dataset snapshots
+            try:
+                deleted_versioned = versioned_store.delete_old_snapshots(dataset_name, keep_count=10)
+                if deleted_versioned > 0:
+                    logger.info(f"Pruned {deleted_versioned} old versioned snapshots for {dataset_name}")
+            except Exception as e:
+                logger.error(f"Failed to prune versioned snapshots for {dataset_name}: {e}")
+                
+        logger.info("Daily Snapshot Pruning Job completed successfully.")
+    except Exception as e:
+        logger.error(f"Error executing daily snapshot pruning: {e}")
+
+
 async def cron_event_loop():
     # Pre-market job at 6:00 AM
     pre_market_task = asyncio.create_task(self_correcting_timer(6, 0, pre_market_intelligence_job))
     # Post-market job at 4:00 PM
     post_market_task = asyncio.create_task(self_correcting_timer(16, 0, post_trade_analysis_job))
-    await asyncio.gather(pre_market_task, post_market_task)
+    # Daily snapshot pruning job at 11:00 PM
+    pruning_task = asyncio.create_task(self_correcting_timer(23, 0, daily_snapshot_pruning_job))
+    await asyncio.gather(pre_market_task, post_market_task, pruning_task)
 
 
 # --- Master Orchestrator ---

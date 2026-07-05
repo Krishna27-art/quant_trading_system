@@ -125,6 +125,13 @@ class FeedManager:
         self.on_failover = on_failover
         self.redis_client = redis_client  # Optional Redis client for publishing alerts
 
+        # Instantiate DataQualityGate
+        from data_platform.feeds.data_quality_gate import DataQualityGate
+        self.quality_gate = DataQualityGate(
+            max_staleness_s=self.staleness_threshold_s,
+            on_reject=self._on_gate_reject
+        )
+
         self._active_tier: FeedTier = FeedTier.PRIMARY
         self._health: dict[FeedTier, FeedHealthStats] = {
             tier: FeedHealthStats() for tier in FeedTier
@@ -284,6 +291,23 @@ class FeedManager:
     # ── internal helpers ────────────────────────────────────
 
     def _accept_tick(self, tick: TickData, tier: FeedTier) -> None:
+        # Enforce quality validation via DataQualityGate
+        verdict = self.quality_gate.validate(
+            symbol=tick.symbol,
+            ltp=tick.ltp,
+            bid=tick.bid,
+            ask=tick.ask,
+            volume=tick.volume,
+            tick_timestamp=tick.timestamp,
+        )
+        if not verdict.accepted:
+            with self._lock:
+                stats = self._health[tier]
+                stats.total_errors += 1
+                stats.consecutive_failures += 1
+            self._maybe_failover()
+            return
+
         with self._lock:
             stats = self._health[tier]
             stats.total_ticks += 1
@@ -291,35 +315,28 @@ class FeedManager:
             stats.last_tick_epoch = time.time()
             self._cache[tick.symbol] = tick
 
-        # Enforce exchange timestamp staleness gate (>30s)
-        exchange_epoch = tick.timestamp
-        if exchange_epoch > 1e11:  # milliseconds
-            exchange_epoch = exchange_epoch / 1000.0
-
-        staleness = time.time() - exchange_epoch
-        if staleness > 30.0:
-            logger.error(
-                f"Tick staleness gate triggered for {tick.symbol}: staleness={staleness:.2f}s (>30s). Tick dropped."
-            )
-            if getattr(self, "redis_client", None):
-                try:
-                    self.redis_client.publish(
-                        "channel:feed_stale",
-                        json.dumps(
-                            {
-                                "symbol": tick.symbol,
-                                "timestamp": tick.timestamp,
-                                "staleness": staleness,
-                                "reason": f"Tick staleness {staleness:.2f}s exceeds 30s",
-                            }
-                        ),
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to publish FEED_STALE to Redis: {e}")
-            return
-
         if self.on_tick:
             self.on_tick(tick)
+
+    def _on_gate_reject(self, verdict) -> None:
+        logger.warning(
+            f"Quality gate rejected tick for {verdict.symbol}: reasons={verdict.reasons} details={verdict.details}"
+        )
+        if getattr(self, "redis_client", None):
+            try:
+                self.redis_client.publish(
+                    "channel:feed_stale",
+                    json.dumps(
+                        {
+                            "symbol": verdict.symbol,
+                            "reasons": [r.value for r in verdict.reasons],
+                            "details": verdict.details,
+                            "msg": "Tick rejected by quality gate",
+                        }
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Failed to publish gate rejection to Redis: {e}")
 
     def _record_error(self, tier: FeedTier, msg: str) -> None:
         with self._lock:

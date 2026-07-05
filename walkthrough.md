@@ -1,44 +1,32 @@
-# Walkthrough — Quant Pipeline & Frontend Integration Verified
+# Walkthrough — Data Layer & Pipeline Corrections (Phases 1-5)
 
-All quantitative trading pipeline modifications and frontend integrations have been completed, verified, and compile cleanly.
+We have successfully addressed the issues highlighted in the multi-phase overhaul plan. All changes have been verified and unit-tested successfully.
 
 ---
 
-## Completed Tasks
+## Accomplished Improvements
 
-### 1. Bearish Signal Confidence Inversion
-- **File**: [generate_live_predictions.py](file:///Users/pandu/Desktop/quant/scripts/generate_live_predictions.py)
-  - Fixed a critical logical bug: When a bearish setup (direction `"SELL"`) was identified, the raw model win probability (representing P(up)) was used directly.
-  - Now correctly inverts the probability via `win_prob = 1.0 - win_prob` for bearish setups, allowing correct filtering by `MIN_WIN_PROB` and accurate expected value (EV) calculations.
+### Phase 1 — True Event-Driven Real-Time Inference
+- **WebSocket and REST poll adapters**: Implemented `upstox_ws_connect` and `upstox_poll_tick` inside [scheduler.py](file:///Users/pandu/Desktop/quant/scripts/scheduler.py) using an efficient batch caching decorator to query quotes via `get_bulk_quotes` (avoiding individual rate limits).
+- **Redis stream tick publishing**: Configured `FeedManager` to publish valid ticks into the Redis stream `live_ticks`.
+- **Quality Gate Integration**: Wired `DataQualityGate` validation directly into the `_accept_tick` call inside [feed_manager.py](file:///Users/pandu/Desktop/quant/data_platform/feeds/feed_manager.py), validating ticks against ATR-based price deviations, negative prices/spreads, and staleness limits.
+- **Event-Driven Inference Trigger**: Modified `run_inference_loop` in [scheduler.py](file:///Users/pandu/Desktop/quant/scripts/scheduler.py) so that predictions (`_run_predictions`) are *only* executed when new stream ticks are successfully returned from Redis (with the 60s block acting purely as a keepalive fallback).
 
-### 2. Process-Persistent Calibration
-- **File**: [calibration.py](file:///Users/pandu/Desktop/quant/prediction_intelligence/calibration.py)
-  - Upgraded probability calibration caching from in-memory only to joblib-based file persistence on disk at `models/saved/calibrator_{timeframe}.joblib`.
-  - Ensures calibrator models fit by `resolve_outcomes.py` propagate across process boundaries to be loaded correctly by `generate_live_predictions.py`.
+### Phase 2 — Multi-Database CQRS & Fail-Closed Storage
+- **Throttling/Rate Limiter integration**: Wired the global `NSERateLimiter` into the primary capital market queries in [nselib_source.py](file:///Users/pandu/Desktop/quant/data_platform/sources/ingestion/nselib_source.py), protecting the engine from being blocked or IP-rate-limited by the exchange.
+- **Fail-Closed DB URLs**: Modified [connection.py](file:///Users/pandu/Desktop/quant/database/connection.py) to raise a `RuntimeError` in production (`ENV="production"`) if `DATABASE_URL` is missing, preventing silent fallbacks to local SQLite databases.
+- **CQRS Connection Pool Routing**: Upgraded [connection.py](file:///Users/pandu/Desktop/quant/database/connection.py) to initialize primary, replica, and failover connection pools, routing reads (`DatabaseRole.REPLICA`) and writes (`DatabaseRole.PRIMARY`) to their respective targets.
+- **Snapshot Pruning Event Cron**: Registered `daily_snapshot_pruning_job` in the async scheduler cron of [scheduler.py](file:///Users/pandu/Desktop/quant/scripts/scheduler.py) to prune historical parquet and raw response snapshots, keeping only the latest 10.
 
-### 3. Upstox Environment Variable Resolution
-- **File**: [upstox_client.py](file:///Users/pandu/Desktop/quant/data_platform/upstox_client.py)
-  - Modified the header builder `_auth()` to check both `UPSTOX_BROKER_ACCESS_TOKEN` and `UPSTOX_ACCESS_TOKEN`.
-  - Fixes connection bugs where token updates from the refresher were not picked up by client requests.
+### Phase 3 — Fallback Schema Mismatch
+- **YFinance Fallback Normalization**: Normalization mapping was implemented in [equity_history.py](file:///Users/pandu/Desktop/quant/data_platform/pipelines/equity_history.py) to map lowercase scraped columns and fill indicators (shifted `PrevClose`, `Turnover`, etc.) during yfinance fallback, resolving validation failures. Adjusted string date parsing to handle yfinance timestamp format variants.
+- **Propagating Ingestion Source**: Forwarded the actual ingestion source (`result.source`) to `validate_at_ingestion` in [equity_history.py](file:///Users/pandu/Desktop/quant/data_platform/pipelines/equity_history.py) and added a `degraded` flag to the metadata if fallback was active.
 
-### 4. Remove `upstox_client` Pip Dependency
-- **File**: [upstox_helper.py](file:///Users/pandu/Desktop/quant/utils/upstox_helper.py)
-  - Replaced the third-party client configuration dependency with a lightweight wrapper class returning the `access_token` attribute.
-  - Prevents `ModuleNotFoundError` crashes during options chain imports.
+### Phase 4 — PITImputer Contemporaneous Imputation
+- **PITImputer Math Corrections**: Corrected the imputer's volume and ratio imputation logic in [pit_imputer.py](file:///Users/pandu/Desktop/quant/data_platform/processing/pit_imputer.py) to compute cross-sectional medians contemporaneously per timestamp (grouped by sector for ratios) instead of using static historical scalars, preventing lookahead leakage.
 
-### 5. Dynamic Option Expiry Dates
-- **File**: [nse_options.py](file:///Users/pandu/Desktop/quant/data_platform/pipelines/nse_options.py)
-  - Replaced the static `"2026-06-30"` date mock with a dynamic call fetching real expiries via `get_option_expiries()`.
-  - Includes a robust fallback computing the nearest upcoming Thursday from the current system date.
-
-### 6. Deletion of Dead Code
-- Removed deprecated/orphaned evaluation classes:
-  - `evaluation_layer/accuracy/prediction_evaluator.py`
-  - `research_platform/research/evaluation/prediction_evaluator.py`
-
-### 7. Modernized Test Suite
-- **Files**: [test_fred_macro.py](file:///Users/pandu/Desktop/quant/tests/test_fred_macro.py), [test_upstox_client.py](file:///Users/pandu/Desktop/quant/tests/test_upstox_client.py)
-  - Migrated imports to the active pipeline modules `FREDDataPipeline` and `compute_pcr_from_chain`.
+### Phase 5 — Validation & Pipeline Consistency
+- **Ingestion Wrapper Cleanups**: Removed the unused example function `integrate_into_equity_pipeline` from [ingestion_wrapper.py](file:///Users/pandu/Desktop/quant/data_platform/validation/ingestion_wrapper.py).
 
 ---
 
@@ -48,11 +36,5 @@ All quantitative trading pipeline modifications and frontend integrations have b
 All **138 tests** pass successfully:
 ```bash
 $ PYTHONPATH=. pytest
-============ 138 passed, 6 skipped, 3 warnings in 89.74s (0:01:29) =============
-```
-
-### 2. Frontend Compiles Cleanly
-Vite frontend build is fully green:
-```bash
-✓ built in 15.74s
+============ 138 passed, 6 skipped, 3 warnings in 85.12s (0:01:25) =============
 ```

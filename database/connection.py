@@ -57,45 +57,69 @@ duckdb_connection = None
 
 
 def get_database_url(role: DatabaseRole = DatabaseRole.PRIMARY) -> str:
-    """Get database URL from environment variables."""
-    url = os.environ.get("DATABASE_URL")
+    """Get database URL from environment variables, supporting CQRS routing."""
+    if role == DatabaseRole.PRIMARY:
+        url = os.environ.get("DATABASE_URL")
+    elif role == DatabaseRole.REPLICA:
+        url = os.environ.get("DATABASE_URL_REPLICA") or os.environ.get("DATABASE_URL")
+    elif role == DatabaseRole.FAILOVER:
+        url = os.environ.get("DATABASE_URL_FAILOVER") or os.environ.get("DATABASE_URL")
+    else:
+        url = os.environ.get("DATABASE_URL")
+
     if not url:
+        if os.environ.get("ENV") == "production":
+            raise RuntimeError(f"DATABASE_URL required in production (requested role: {role.value})")
         # Fallback to SQLite for local development
-        logger.warning("DATABASE_URL not set, using SQLite fallback")
+        logger.warning(f"DATABASE_URL not set for {role.value}, using SQLite fallback")
         return "sqlite:///quant.db"
     return url
 
 
 def initialize_pool(min_connections: int = 1, max_connections: int = 20) -> bool:
     """
-    Initialize database connection pool or SQLite connection.
+    Initialize database connection pools (Primary, Replica, Failover) or SQLite connection.
     """
-    global postgresql_primary_pool
+    global postgresql_primary_pool, postgresql_replica_pool, postgresql_failover_pool
     try:
-        db_url = get_database_url()
-        logger.info(f"Initializing database connection: {db_url}")
-
+        # 1. Primary Pool
+        db_url = get_database_url(DatabaseRole.PRIMARY)
+        logger.info(f"Initializing primary database pool: {db_url}")
         if db_url.startswith("sqlite"):
-            # SQLite doesn't use connection pools
-            logger.info("Using SQLite database")
-            return True
+            logger.info("Using SQLite database for primary")
         else:
-            # PostgreSQL connection pool
             postgresql_primary_pool = pool.SimpleConnectionPool(
                 min_connections, max_connections, db_url
             )
-            return True
+
+        # 2. Replica Pool
+        replica_url = get_database_url(DatabaseRole.REPLICA)
+        logger.info(f"Initializing replica database pool: {replica_url}")
+        if not replica_url.startswith("sqlite"):
+            postgresql_replica_pool = pool.SimpleConnectionPool(
+                min_connections, max_connections, replica_url
+            )
+
+        # 3. Failover Pool
+        failover_url = get_database_url(DatabaseRole.FAILOVER)
+        logger.info(f"Initializing failover database pool: {failover_url}")
+        if not failover_url.startswith("sqlite"):
+            postgresql_failover_pool = pool.SimpleConnectionPool(
+                min_connections, max_connections, failover_url
+            )
+
+        return True
     except Exception as e:
-        logger.critical(f"Failed to initialize database pool: {e}")
+        logger.critical(f"Failed to initialize database pools: {e}")
         raise RuntimeError(f"Database pool initialization failed: {e}")
 
 
 def get_connection(role: DatabaseRole = DatabaseRole.PRIMARY):
     """
-    Get a database connection (PostgreSQL pool or SQLite).
+    Get a database connection (PostgreSQL pool or SQLite) matching the requested role.
     """
-    global postgresql_primary_pool
-    db_url = get_database_url()
+    global postgresql_primary_pool, postgresql_replica_pool, postgresql_failover_pool
+    db_url = get_database_url(role)
 
     if db_url.startswith("sqlite"):
         # SQLite connection
@@ -103,21 +127,36 @@ def get_connection(role: DatabaseRole = DatabaseRole.PRIMARY):
         return sqlite3.connect(db_path)
     else:
         # PostgreSQL connection pool
-        if not postgresql_primary_pool:
-            initialize_pool()
+        pool_to_use = None
+        if role == DatabaseRole.PRIMARY:
+            if not postgresql_primary_pool:
+                initialize_pool()
+            pool_to_use = postgresql_primary_pool
+        elif role == DatabaseRole.REPLICA:
+            if not postgresql_replica_pool:
+                initialize_pool()
+            pool_to_use = postgresql_replica_pool or postgresql_primary_pool
+        elif role == DatabaseRole.FAILOVER:
+            if not postgresql_failover_pool:
+                initialize_pool()
+            pool_to_use = postgresql_failover_pool or postgresql_primary_pool
+
+        if not pool_to_use:
+            raise RuntimeError(f"Database pool for role {role.value} is not initialized")
+            
         try:
-            return postgresql_primary_pool.getconn()
+            return pool_to_use.getconn()
         except Exception as e:
-            logger.critical(f"Failed to get PostgreSQL connection from pool: {e}")
+            logger.critical(f"Failed to get PostgreSQL connection from pool for {role.value}: {e}")
             raise RuntimeError(f"Failed to get connection: {e}")
 
 
-def release_connection(conn):
+def release_connection(conn, role: DatabaseRole = DatabaseRole.PRIMARY):
     """
-    Release/put back a database connection to the pool or close SQLite.
+    Release/put back a database connection to the matching pool or close SQLite.
     """
-    global postgresql_primary_pool
-    db_url = get_database_url()
+    global postgresql_primary_pool, postgresql_replica_pool, postgresql_failover_pool
+    db_url = get_database_url(role)
 
     if db_url.startswith("sqlite"):
         # Close SQLite connection
@@ -125,23 +164,36 @@ def release_connection(conn):
             conn.close()
     else:
         # PostgreSQL connection pool
-        if conn and postgresql_primary_pool:
+        pool_to_use = postgresql_primary_pool
+        if role == DatabaseRole.REPLICA:
+            pool_to_use = postgresql_replica_pool or postgresql_primary_pool
+        elif role == DatabaseRole.FAILOVER:
+            pool_to_use = postgresql_failover_pool or postgresql_primary_pool
+
+        if conn and pool_to_use:
             try:
-                postgresql_primary_pool.putconn(conn)
+                pool_to_use.putconn(conn)
             except Exception as e:
-                logger.error(f"Failed to release connection back to pool: {e}")
+                logger.error(f"Failed to release connection back to pool for {role.value}: {e}")
 
 
 def close_all_connections():
-    """Close PostgreSQL connection pool."""
-    global postgresql_primary_pool
-    if postgresql_primary_pool:
-        try:
-            postgresql_primary_pool.closeall()
-            logger.info("Closed all connections in PostgreSQL pool")
-        except Exception as e:
-            logger.error(f"Error closing PostgreSQL pool: {e}")
-        postgresql_primary_pool = None
+    """Close PostgreSQL connection pools."""
+    global postgresql_primary_pool, postgresql_replica_pool, postgresql_failover_pool
+    for p_name, p in [
+        ("primary", postgresql_primary_pool),
+        ("replica", postgresql_replica_pool),
+        ("failover", postgresql_failover_pool)
+    ]:
+        if p:
+            try:
+                p.closeall()
+                logger.info(f"Closed all connections in PostgreSQL {p_name} pool")
+            except Exception as e:
+                logger.error(f"Error closing PostgreSQL {p_name} pool: {e}")
+    postgresql_primary_pool = None
+    postgresql_replica_pool = None
+    postgresql_failover_pool = None
 
     logger.info("All database connections closed")
 
@@ -154,7 +206,7 @@ def get_db_connection(role: DatabaseRole = DatabaseRole.PRIMARY):
         yield conn
     finally:
         if conn:
-            release_connection(conn)
+            release_connection(conn, role)
 
 
 def execute_query(
@@ -170,7 +222,7 @@ def execute_query(
         if not conn:
             return None
 
-        db_url = get_database_url()
+        db_url = get_database_url(role)
         is_sqlite = db_url.startswith("sqlite")
 
         try:
@@ -238,7 +290,7 @@ def execute_batch(query: str, params_list: list[tuple]) -> bool:
         if not conn:
             return False
 
-        db_url = get_database_url()
+        db_url = get_database_url(DatabaseRole.PRIMARY)
         is_sqlite = db_url.startswith("sqlite")
 
         try:
@@ -260,7 +312,7 @@ def execute_batch(query: str, params_list: list[tuple]) -> bool:
 
 def create_tables():
     """Create database tables if they don't exist in PostgreSQL / SQLite."""
-    db_url = get_database_url()
+    db_url = get_database_url(DatabaseRole.PRIMARY)
     is_sqlite = db_url.startswith("sqlite")
     
     # Auto-increment keyword definition
@@ -564,7 +616,7 @@ def get_stock_price(symbol: str) -> dict[str, Any] | None:
 
 def get_sector_performance() -> list[dict[str, Any]]:
     """Aggregate stock performance by sector."""
-    db_url = get_database_url()
+    db_url = get_database_url(DatabaseRole.REPLICA)
     is_sqlite = db_url.startswith("sqlite")
     
     if is_sqlite:
@@ -968,7 +1020,7 @@ def get_indices() -> list[dict[str, Any]]:
     except Exception as e:
         logger.warning(f"Index tick query failed, using stock proxy: {e}")
 
-    db_url = get_database_url()
+    db_url = get_database_url(DatabaseRole.REPLICA)
     is_sqlite = db_url.startswith("sqlite")
     
     if is_sqlite:

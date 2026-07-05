@@ -122,6 +122,31 @@ class EquityHistoryPipeline:
             except Exception as e:
                 logger.warning(f"Failed to record lineage: {str(e)}")
 
+            # Normalize column names if they are already lowercase (e.g. from yfinance fallback)
+            if "date" in df.columns and "Date" not in df.columns:
+                df = df.rename(columns={
+                    "open": "OpenPrice",
+                    "high": "HighPrice",
+                    "low": "LowPrice",
+                    "close": "ClosePrice",
+                    "volume": "TotalTradedQuantity",
+                    "symbol": "Symbol",
+                    "date": "Date"
+                })
+                # Add placeholders for other nselib columns expected by downstream validators
+                if "Series" not in df.columns and "series" not in df.columns:
+                    df["Series"] = "EQ"
+                if "PrevClose" not in df.columns and "prev_close" not in df.columns:
+                    df["PrevClose"] = df["ClosePrice"].shift(1).fillna(df["ClosePrice"])
+                if "LastPrice" not in df.columns and "last_price" not in df.columns:
+                    df["LastPrice"] = df["ClosePrice"]
+                if "AveragePrice" not in df.columns and "average_price" not in df.columns:
+                    df["AveragePrice"] = (df["OpenPrice"] + df["HighPrice"] + df["LowPrice"] + df["ClosePrice"]) / 4.0
+                if "Turnover₹" not in df.columns and "turnover" not in df.columns:
+                    df["Turnover₹"] = df["TotalTradedQuantity"] * df["ClosePrice"]
+                if "No.ofTrades" not in df.columns and "num_trades" not in df.columns:
+                    df["No.ofTrades"] = 0
+
             # Rename columns to standard format
             column_mapping = {
                 "Symbol": "symbol",
@@ -169,7 +194,11 @@ class EquityHistoryPipeline:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
 
             # Set date as index
-            df["date"] = pd.to_datetime(df["date"], format="%d-%b-%Y")
+            if not pd.api.types.is_datetime64_any_dtype(df["date"]):
+                try:
+                    df["date"] = pd.to_datetime(df["date"], format="%d-%b-%Y")
+                except ValueError:
+                    df["date"] = pd.to_datetime(df["date"])
             df = df.set_index("date")
 
             logger.info(f"Date range: {df.index.min()} to {df.index.max()}")
@@ -178,8 +207,10 @@ class EquityHistoryPipeline:
             df, validation_metadata = validate_at_ingestion(
                 df=df.reset_index(),  # Reset index for validation
                 dataset_name=f"equity_history_{self.config.symbol}",
-                source="NSE",
+                source=result.source,
             )
+            # Inject degraded flag if fallback was used
+            validation_metadata["degraded"] = (result.source != "nselib")
 
             # Check if validation passed
             if not validation_metadata["validation_passed"]:

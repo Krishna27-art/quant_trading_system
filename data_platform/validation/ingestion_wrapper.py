@@ -195,31 +195,4 @@ def validate_at_ingestion(
     )
 
 
-# Example usage for integration into existing pipelines
-def integrate_into_equity_pipeline():
-    """
-    Example of how to integrate validation into equity_history pipeline.
 
-    Add this to the EquityHistoryPipeline class:
-
-    from data_platform.validation.ingestion_wrapper import validate_at_ingestion
-
-    def download_ohlcv(self) -> pd.DataFrame:
-        # ... existing download logic ...
-
-        # After getting df, validate it
-        df, validation_metadata = validate_at_ingestion(
-            df=df,
-            dataset_name=f"equity_history_{self.config.symbol}",
-            source="NSE"
-        )
-
-        # Check if validation passed
-        if not validation_metadata['validation_passed']:
-            raise ValueError(
-                f"Validation failed: {validation_metadata['handling_metadata']}"
-            )
-
-        return df
-    """
-    pass

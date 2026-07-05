@@ -1,0 +1,14 @@
+- `[x]` Phase 1: Expose Upstox WebSocket & REST poll adapters
+- `[x]` Phase 1: Wire Upstox adapters into FeedManager in `scheduler.py`
+- `[x]` Phase 1: Wire Redis stream tick publishing in FeedManager tick consumer
+- `[x]` Phase 1: Wire DataQualityGate validation into `_accept_tick` in FeedManager
+- `[x]` Phase 1: Make inference loop strictly event-driven (executes only on non-empty tick stream)
+- `[x]` Phase 2: Wire NSERateLimiter checks into NSELibSource capital market calls
+- `[x]` Phase 2: Enforce fail-closed database URL validation in production (raise error if empty)
+- `[x]` Phase 2: Implement CQRS database pool routing (Primary, Replica, Failover)
+- `[x]` Phase 2: Schedule daily snapshot retention cleaner job in event loop
+- `[x]` Phase 3: Normalize scraper/yfinance fallback column mappings in `equity_history.py`
+- `[x]` Phase 3: Propagate actual ingestion source and degraded flag to validation metadata
+- `[x]` Phase 4: Correct PITImputer cross-sectional median calculations contemporaneously per timestamp
+- `[x]` Phase 5: Clean up dead scaffolding example functions in `ingestion_wrapper.py`
+- `[x]` Run entire test suite to verify correctness (138/138 green)

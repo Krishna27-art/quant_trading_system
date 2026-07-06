@@ -109,8 +109,8 @@ class HealthChecker:
         memory_critical_pct: float = 95.0,
     ) -> None:
         self.db_url = db_url or os.getenv(
-            "POSTGRES_URL",
-            "postgresql://quant_user:quant_pass@localhost:5432/quant_db",
+            "DATABASE_URL",
+            "sqlite:///quant.db",
         )
         self.broker_health_url = broker_health_url or os.getenv("BROKER_HEALTH_URL", "")
         self.data_feed_staleness_threshold_s = data_feed_staleness_threshold_s
@@ -151,11 +151,18 @@ class HealthChecker:
         try:
             import sqlalchemy
 
-            engine = sqlalchemy.create_engine(
-                self.db_url,
-                pool_pre_ping=True,
-                connect_args={"connect_timeout": 5},
-            )
+            is_sqlite = self.db_url.startswith("sqlite")
+            if is_sqlite:
+                engine = sqlalchemy.create_engine(
+                    self.db_url,
+                    connect_args={"check_same_thread": False},
+                )
+            else:
+                engine = sqlalchemy.create_engine(
+                    self.db_url,
+                    pool_pre_ping=True,
+                    connect_args={"connect_timeout": 5},
+                )
             with engine.connect() as conn:
                 conn.execute(sqlalchemy.text("SELECT 1"))
             latency = (time.monotonic() - start) * 1000
@@ -164,7 +171,7 @@ class HealthChecker:
                 name="database",
                 status=ComponentStatus.HEALTHY,
                 latency_ms=latency,
-                message="PostgreSQL reachable",
+                message=f"{'SQLite' if is_sqlite else 'PostgreSQL'} reachable",
             )
         except Exception as exc:
             latency = (time.monotonic() - start) * 1000

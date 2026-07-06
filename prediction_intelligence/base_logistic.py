@@ -124,7 +124,7 @@ def build_label(
         timestamps = pd.date_range("1970-01-01", periods=len(df), freq="D")
 
     labels_list = labeler.compute_labels(
-        prices=df["close"],
+        prices=df,
         timestamps=timestamps,
         symbol="TRAIN_DF",
     )

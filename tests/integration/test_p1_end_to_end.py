@@ -32,9 +32,9 @@ def test_jwt_auth_endpoints(api_client):
     resp = api_client.get("/api/health")
     assert resp.status_code == 200
 
-    # 3. Access public metrics endpoint -> should get 200
+    # 3. Access protected metrics endpoint without token -> should get 401
     resp = api_client.get("/metrics")
-    assert resp.status_code == 200
+    assert resp.status_code == 401
 
     # 4. Login with invalid credentials -> should get 401
     resp = api_client.post(
@@ -51,13 +51,16 @@ def test_jwt_auth_endpoints(api_client):
     assert "access_token" in token_data
     assert token_data["token_type"] == "bearer"
 
-    # 6. Access protected endpoint with valid token -> should get 200
+    # 6. Access protected endpoints with valid token -> should get 200
     token = token_data["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
     resp = api_client.get("/api/stocks", headers=headers)
     assert (
         resp.status_code == 200 or resp.status_code == 503
     )  # 503 is acceptable in live environment if database isn't running
+
+    resp_metrics = api_client.get("/metrics", headers=headers)
+    assert resp_metrics.status_code == 200
 
 
 @pytest.mark.integration

@@ -26,9 +26,9 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import make_asgi_app
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 # Upstox is the single market-data source — yfinance removed
 try:
@@ -89,23 +89,28 @@ app = FastAPI(
 
 app.include_router(auth_router, prefix="/api/auth")
 
+allowed_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://[::]:3000",
+    "http://[::1]:3000",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+]
+env_origins = os.getenv("CORS_ALLOWED_ORIGINS")
+if env_origins:
+    allowed_origins.extend([o.strip() for o in env_origins.split(",") if o.strip()])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://[::]:3000",
-        "http://[::1]:3000",
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "*",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-app.mount("/metrics", make_asgi_app())
+from observability_mlops.prometheus_metrics import MetricsCollector
+metrics_collector = MetricsCollector()
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -330,6 +335,14 @@ def _derive_history_from_upstox(candles: list[dict]) -> dict:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/metrics")
+def get_metrics(current_user: dict = Depends(verify_token)):
+    """Prometheus metrics scrape endpoint protected by JWT auth."""
+    from observability_mlops.prometheus_metrics import _default_registry
+    data = generate_latest(_default_registry)
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "version": "1.0.0", "timestamp": now_ist().isoformat()}
@@ -342,62 +355,36 @@ def health_check():
 
 @app.get("/api/health/status", response_model=list[HealthStatus])
 def get_system_health():
-    """Component-level health. Checks DB connectivity and model availability."""
-    from pathlib import Path
-    statuses = []
-
-    # Database
-    try:
-        get_latest_prices()
-        statuses.append(HealthStatus(name="Database", status="healthy", value="Connected", message="Query successful"))
-    except Exception as e:
-        statuses.append(HealthStatus(name="Database", status="degraded", value="Error", message=str(e)[:120]))
-
-    # Model artifacts
-    model_dir = Path(os.getenv("MODEL_DIR", "data/production/models"))
-    model_items = []
-    if model_dir.exists():
-        for item in model_dir.iterdir():
-            if item.is_dir() or item.suffix in (".joblib", ".pkl"):
-                model_items.append(item.name)
-                
-    if model_items:
-        statuses.append(HealthStatus(
-            name="ML Models",
-            status="healthy",
-            value=f"{len(model_items)} loaded",
-            message=", ".join(model_items),
-        ))
-    else:
-        statuses.append(HealthStatus(
-            name="ML Models",
-            status="degraded",
-            value="Missing",
-            message=f"No models found in {model_dir}.",
-        ))
-
-    # Data pipeline freshness (rough check: latest price timestamp)
+    """Component-level health. Checks DB connectivity, broker reachability, data feed freshness, disk, and memory."""
+    from observability_mlops.health_check import HealthChecker
+    db_url = os.getenv("DATABASE_URL", "sqlite:///quant.db")
+    checker = HealthChecker(db_url=db_url)
+    
+    # Attempt to feed data freshness metric from latest price in DB
     try:
         prices = get_latest_prices()
-        priced = {str(p.get("symbol") or "").upper() for p in prices}
-        try:
-            from config.universe import NSE_UNIVERSE
-            expected = {str(s["symbol"]).upper() for s in NSE_UNIVERSE}
-        except Exception:
-            expected = priced
-        missing = sorted(expected - priced)
-        coverage = f"{len(priced)}/{len(expected)}"
-        msg = f"Missing prices: {', '.join(missing[:8])}" if missing else "All configured symbols priced"
+        if prices:
+            latest_time = max(p.get("timestamp") for p in prices if p.get("timestamp"))
+            if latest_time:
+                if isinstance(latest_time, str):
+                    from datetime import datetime
+                    latest_dt = datetime.fromisoformat(latest_time)
+                else:
+                    latest_dt = latest_time
+                checker.update_last_tick(latest_dt.timestamp())
+    except Exception:
+        pass
+        
+    report = checker.run_all()
+    
+    statuses = []
+    for component in report.components:
         statuses.append(HealthStatus(
-            name="Data Pipeline",
-            status="healthy" if prices and not missing else "degraded",
-            value=coverage,
-            message=msg,
+            name=component.name.replace("_", " ").title(),
+            status=component.status.value,
+            value=f"{component.latency_ms:.1f}ms" if component.latency_ms > 0 else "N/A",
+            message=component.message
         ))
-    except Exception as e:
-        statuses.append(HealthStatus(name="Data Pipeline", status="degraded", value="Error", message=str(e)[:120]))
-
-    statuses.append(HealthStatus(name="API Gateway", status="healthy", value="100%", message="Serving requests"))
     return statuses
 
 
@@ -582,7 +569,7 @@ def bad_trade_diagnosis(symbol: str):
 
 
 @app.post("/api/calibration/recalibrate")
-def recalibrate():
+def recalibrate(current_user: dict = Depends(verify_token)):
     """
     Trigger recalibration of probability models.
     Fetches historical predictions and outcomes, then refits calibrators.
@@ -594,52 +581,52 @@ def recalibrate():
         from sqlalchemy import text
 
         db = SessionLocal()
-        
-        # Fetch historical predictions with outcomes
-        result = db.execute(
-            text("""
-                SELECT horizon, confidence, actual_outcome, prediction
-                FROM predictions
-                WHERE actual_outcome IN ('WIN', 'LOSS')
-                ORDER BY prediction_time DESC
-                LIMIT 2000
-            """)
-        ).fetchall()
-        
-        if not result:
-            return {"status": "ok", "message": "No historical outcomes found for calibration"}
-        
-        # Group by (timeframe, direction)
-        calib_data = {}
-        for row in result:
-            horizon = row[0]       # INTRADAY, SWING, LONGTERM
-            confidence = float(row[1])
-            outcome = 1 if row[2] == "WIN" else 0
-            direction = row[3]     # BUY, SELL
+        try:
+            # Fetch historical predictions with outcomes
+            result = db.execute(
+                text("""
+                    SELECT horizon, confidence, actual_outcome, prediction
+                    FROM predictions
+                    WHERE actual_outcome IN ('WIN', 'LOSS')
+                    ORDER BY prediction_time DESC
+                    LIMIT 2000
+                """)
+            ).fetchall()
             
-            key = (horizon, direction)
-            if key not in calib_data:
-                calib_data[key] = {"raw_probs": [], "outcomes": []}
-            calib_data[key]["raw_probs"].append(confidence)
-            calib_data[key]["outcomes"].append(outcome)
-        
-        # Fit calibrators for each timeframe + direction combination
-        fitted_count = 0
-        fitted_keys = []
-        for (timeframe, direction), data in calib_data.items():
-            if len(data["raw_probs"]) >= 50:
-                fit_calibrator(data["raw_probs"], data["outcomes"], timeframe, direction=direction, method="isotonic")
-                fitted_count += 1
-                fitted_keys.append(f"{timeframe}_{direction}")
-                logger.info(f"Recalibrated {timeframe} ({direction}) with {len(data['raw_probs'])} samples")
-        
-        db.close()
-        
-        return {
-            "status": "ok",
-            "message": f"Recalibration completed for {fitted_count} direction-specific timeframes",
-            "fitted_timeframes": fitted_keys
-        }
+            if not result:
+                return {"status": "ok", "message": "No historical outcomes found for calibration"}
+            
+            # Group by (timeframe, direction)
+            calib_data = {}
+            for row in result:
+                horizon = row[0]       # INTRADAY, SWING, LONGTERM
+                confidence = float(row[1])
+                outcome = 1 if row[2] == "WIN" else 0
+                direction = row[3]     # BUY, SELL
+                
+                key = (horizon, direction)
+                if key not in calib_data:
+                    calib_data[key] = {"raw_probs": [], "outcomes": []}
+                calib_data[key]["raw_probs"].append(confidence)
+                calib_data[key]["outcomes"].append(outcome)
+            
+            # Fit calibrators for each timeframe + direction combination
+            fitted_count = 0
+            fitted_keys = []
+            for (timeframe, direction), data in calib_data.items():
+                if len(data["raw_probs"]) >= 50:
+                    fit_calibrator(data["raw_probs"], data["outcomes"], timeframe, direction=direction, method="isotonic")
+                    fitted_count += 1
+                    fitted_keys.append(f"{timeframe}_{direction}")
+                    logger.info(f"Recalibrated {timeframe} ({direction}) with {len(data['raw_probs'])} samples")
+            
+            return {
+                "status": "ok",
+                "message": f"Recalibration completed for {fitted_count} direction-specific timeframes",
+                "fitted_timeframes": fitted_keys
+            }
+        finally:
+            db.close()
         
     except Exception as e:
         logger.error(f"Recalibration failed: {e}", exc_info=True)
@@ -664,7 +651,7 @@ class BacktestRequest(BaseModel):
 
 
 @app.post("/api/train/run")
-def run_training(request: TrainingRequest):
+def run_training(request: TrainingRequest, current_user: dict = Depends(verify_token)):
     """
     Trigger model training job.
     This is a placeholder - actual training should run as async job via Celery/Prefect.
@@ -684,7 +671,7 @@ def run_training(request: TrainingRequest):
 
 
 @app.post("/api/backtest/run")
-def run_backtest(request: BacktestRequest):
+def run_backtest(request: BacktestRequest, current_user: dict = Depends(verify_token)):
     """
     Trigger backtest job.
     This is a placeholder - actual backtest should run as async job via Celery/Prefect.
@@ -719,19 +706,18 @@ class PaperTradeUpdate(BaseModel):
 
 
 @app.post("/api/paper/trades")
-def create_paper_trade(trade: PaperTradeCreate):
+def create_paper_trade(trade: PaperTradeCreate, current_user: dict = Depends(verify_token)):
     """Create a new paper trade."""
-    try:
-        from database.db_sync import SessionLocal
-        from database.models import PaperTrade
-        import uuid
-        from utils.time_utils import now_ist
+    from database.db_sync import SessionLocal
+    from database.models import PaperTrade
+    import uuid
+    from utils.time_utils import now_ist
 
-        db = SessionLocal()
-        
+    db = SessionLocal()
+    try:
         paper_trade = PaperTrade(
             id=str(uuid.uuid4()),
-            user_id="default",  # In production, get from auth token
+            user_id=current_user.get("sub", "default"),
             symbol=trade.symbol.upper(),
             side=trade.side.upper(),
             quantity=trade.quantity,
@@ -745,7 +731,17 @@ def create_paper_trade(trade: PaperTradeCreate):
         db.add(paper_trade)
         db.commit()
         db.refresh(paper_trade)
-        db.close()
+        
+        # Increment orders metric
+        try:
+            metrics_collector.orders_total.labels(
+                exchange="NSE",
+                strategy="PAPER_TRADING",
+                side=trade.side.upper(),
+                order_type="LIMIT"
+            ).inc()
+        except Exception as me:
+            logger.warning(f"Failed to increment orders_total metric: {me}")
         
         return {
             "id": paper_trade.id,
@@ -759,18 +755,19 @@ def create_paper_trade(trade: PaperTradeCreate):
     except Exception as e:
         logger.error(f"Failed to create paper trade: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create paper trade: {str(e)}")
+    finally:
+        db.close()
 
 
 @app.get("/api/paper/trades")
-def list_paper_trades(status: str | None = Query(default=None)):
+def list_paper_trades(status: str | None = Query(default=None), current_user: dict = Depends(verify_token)):
     """List all paper trades, optionally filtered by status."""
-    try:
-        from database.db_sync import SessionLocal
-        from database.models import PaperTrade
-        from sqlalchemy import text
+    from database.db_sync import SessionLocal
+    from database.models import PaperTrade
+    from sqlalchemy import text
 
-        db = SessionLocal()
-        
+    db = SessionLocal()
+    try:
         query = "SELECT * FROM paper_trades"
         params = {}
         if status:
@@ -779,7 +776,6 @@ def list_paper_trades(status: str | None = Query(default=None)):
         query += " ORDER BY created_at DESC"
         
         result = db.execute(text(query), params).fetchall()
-        db.close()
         
         trades = []
         for row in result:
@@ -802,20 +798,21 @@ def list_paper_trades(status: str | None = Query(default=None)):
     except Exception as e:
         logger.error(f"Failed to list paper trades: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list paper trades: {str(e)}")
+    finally:
+        db.close()
 
 
 @app.put("/api/paper/trades/{trade_id}")
 @app.patch("/api/paper/trades/{trade_id}")
-def update_paper_trade(trade_id: str, update: PaperTradeUpdate):
+def update_paper_trade(trade_id: str, update: PaperTradeUpdate, current_user: dict = Depends(verify_token)):
     """Update a paper trade (exit price or status)."""
-    try:
-        from database.db_sync import SessionLocal
-        from database.models import PaperTrade
-        from sqlalchemy import text
-        from utils.time_utils import now_ist
+    from database.db_sync import SessionLocal
+    from database.models import PaperTrade
+    from sqlalchemy import text
+    from utils.time_utils import now_ist
 
-        db = SessionLocal()
-        
+    db = SessionLocal()
+    try:
         # Fetch existing trade
         trade = db.execute(
             text("SELECT * FROM paper_trades WHERE id = :trade_id"),
@@ -823,7 +820,6 @@ def update_paper_trade(trade_id: str, update: PaperTradeUpdate):
         ).fetchone()
         
         if not trade:
-            db.close()
             raise HTTPException(status_code=404, detail="Trade not found")
         
         # Build update query
@@ -847,32 +843,46 @@ def update_paper_trade(trade_id: str, update: PaperTradeUpdate):
             query = f"UPDATE paper_trades SET {', '.join(updates)}, updated_at = :updated_at WHERE id = :trade_id"
             db.execute(text(query), params)
             db.commit()
+            
+            # Increment fills metric if the trade is closed/filled
+            if update.status and update.status.upper() == "CLOSED":
+                try:
+                    # trade[3] is the side field (BUY/SELL)
+                    side_val = trade[3] if len(trade) > 3 else "BUY"
+                    metrics_collector.fills_total.labels(
+                        exchange="NSE",
+                        strategy="PAPER_TRADING",
+                        side=side_val
+                    ).inc()
+                except Exception as me:
+                    logger.warning(f"Failed to increment fills_total metric: {me}")
         
-        db.close()
         return {"status": "ok", "message": "Trade updated"}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to update paper trade: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to update paper trade: {str(e)}")
+    finally:
+        db.close()
 
 
 @app.delete("/api/paper/trades/{trade_id}")
-def delete_paper_trade(trade_id: str):
+def delete_paper_trade(trade_id: str, current_user: dict = Depends(verify_token)):
     """Delete a paper trade."""
-    try:
-        from database.db_sync import SessionLocal
-        from sqlalchemy import text
+    from database.db_sync import SessionLocal
+    from sqlalchemy import text
 
-        db = SessionLocal()
+    db = SessionLocal()
+    try:
         db.execute(text("DELETE FROM paper_trades WHERE id = :trade_id"), {"trade_id": trade_id})
         db.commit()
-        db.close()
-        
         return {"status": "ok", "message": "Trade deleted"}
     except Exception as e:
         logger.error(f"Failed to delete paper trade: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete paper trade: {str(e)}")
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

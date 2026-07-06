@@ -23,6 +23,8 @@ LONGTERM_FEATURES = [
     "rsi_14w",
     "vol_ratio",
     "price_to_52w_high",
+    "pe_ratio",
+    "debt_to_equity",
     "vix",
 ]
 

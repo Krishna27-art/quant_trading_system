@@ -62,6 +62,26 @@ MODEL_DIR = Path(os.getenv("MODEL_DIR", "models/saved"))
 from config.universe import NSE_UNIVERSE
 SYMBOLS = [s["symbol"] for s in NSE_UNIVERSE]
 
+# Cache for per-symbol fundamental data
+_fundamentals_cache: dict[str, dict[str, float]] = {}
+
+def get_symbol_fundamentals(symbol: str) -> dict[str, float]:
+    if symbol in _fundamentals_cache:
+        return _fundamentals_cache[symbol]
+    try:
+        ticker_symbol = f"{symbol}.NS"
+        info = yf.Ticker(ticker_symbol).info
+        fund = {
+            "pe_ratio": float(info.get("forwardPE", 20.0)),
+            "debt_to_equity": float(info.get("debtToEquity", 50.0)) / 100.0,
+        }
+        logger.info(f"Fetched fundamentals for {symbol}: PE={fund['pe_ratio']:.2f}, D/E={fund['debt_to_equity']:.2f}")
+    except Exception as e:
+        logger.warning(f"Failed to fetch fundamentals for {symbol}: {e}. Using fallback defaults (PE=20.0, D/E=0.5).")
+        fund = {"pe_ratio": 20.0, "debt_to_equity": 0.5}
+    _fundamentals_cache[symbol] = fund
+    return fund
+
 # Timeframe config: yfinance period/interval, ATR window, target/SL multipliers
 # target_multiplier and sl_multiplier allow independent scaling of target and stop-loss
 # from ATR, breaking the fixed 2:1 ratio constraint
@@ -476,7 +496,12 @@ def generate_predictions_for_timeframe(
             if df is None:
                 continue
 
-            df_feats = canonical_build_features(df, timeframe, extra=macro)
+            extra_data = dict(macro)
+            if timeframe == "LONGTERM":
+                fund = get_symbol_fundamentals(sym)
+                extra_data.update(fund)
+
+            df_feats = canonical_build_features(df, timeframe, extra=extra_data)
             if df_feats.empty:
                 logger.warning(f"{sym} [{timeframe}]: feature build failed, skipping.")
                 continue

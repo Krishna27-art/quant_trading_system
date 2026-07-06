@@ -34,10 +34,11 @@ def create_access_token(data: dict, expires_delta: timedelta = timedelta(hours=1
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    env = os.getenv("ENV", "LOCAL")
     if not credentials:
-        if "pytest" in sys.modules:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        return {"sub": "dev_bypass"}
+        if env.upper() == "LOCAL_DEV":
+            return {"sub": "dev_bypass"}
+        raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(credentials.credentials, _jwt_secret(), algorithms=[ALGORITHM])
         return payload
@@ -50,6 +51,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
 
 
 from fastapi.security import OAuth2PasswordRequestForm
+import secrets
 
 
 @router.post("/login")
@@ -63,8 +65,12 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
         raise HTTPException(status_code=503, detail=str(exc))
 
     expected_user = os.getenv("ADMIN_USERNAME", "admin")
-    expected_password = os.getenv("ADMIN_PASSWORD")
-    if form_data.username == expected_user and form_data.password == expected_password:
+    expected_password = os.getenv("ADMIN_PASSWORD", "")
+    
+    user_match = secrets.compare_digest(form_data.username.encode("utf-8"), expected_user.encode("utf-8"))
+    pass_match = secrets.compare_digest(form_data.password.encode("utf-8"), expected_password.encode("utf-8"))
+    
+    if user_match and pass_match:
         access_token = create_access_token(data={"sub": form_data.username})
         return {"access_token": access_token, "token_type": "bearer"}
     raise HTTPException(status_code=401, detail="Invalid credentials")

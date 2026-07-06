@@ -16,8 +16,8 @@ CQRS Pattern:
 - API never touches OMS tables directly - uses materialized views
 
 Security:
-- Credentials retrieved from Vault (no hardcoded secrets)
-- Dynamic credentials with short TTL
+- Credentials retrieved from env vars (development mode; Vault integration is a placeholder)
+- Dynamic credentials configuration with short TTL is disabled in dev/local mode
 """
 
 import os

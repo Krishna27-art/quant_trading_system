@@ -79,7 +79,7 @@ class TripleBarrierLabeler:
         Compute triple-barrier labels for a price series.
 
         Args:
-            prices: Series of prices (typically close prices)
+            prices: Series of prices (typically close prices) or a DataFrame containing 'close', 'high', 'low'
             timestamps: DatetimeIndex corresponding to prices
             symbol: Instrument symbol
             source: Data source identifier
@@ -96,18 +96,30 @@ class TripleBarrierLabeler:
             )
             return []
 
+        # Determine if we have a DataFrame with high/low columns or a Series
+        if isinstance(prices, pd.DataFrame):
+            close_prices = prices["close"]
+            high_prices = prices["high"] if "high" in prices.columns else prices["close"]
+            low_prices = prices["low"] if "low" in prices.columns else prices["close"]
+        else:
+            close_prices = prices
+            high_prices = prices
+            low_prices = prices
+
         labels = []
         now = pd.Timestamp.now()
 
-        for i in range(len(prices) - self.vertical_barrier_days):
-            entry_price = prices.iloc[i]
+        for i in range(len(close_prices) - self.vertical_barrier_days):
+            entry_price = close_prices.iloc[i]
             entry_time = timestamps[i]
 
             # Look ahead to see which barrier is hit first
-            future_prices = prices.iloc[i + 1 : i + 1 + self.vertical_barrier_days]
+            future_closes = close_prices.iloc[i + 1 : i + 1 + self.vertical_barrier_days]
+            future_highs = high_prices.iloc[i + 1 : i + 1 + self.vertical_barrier_days]
+            future_lows = low_prices.iloc[i + 1 : i + 1 + self.vertical_barrier_days]
             future_times = timestamps[i + 1 : i + 1 + self.vertical_barrier_days]
 
-            if len(future_prices) == 0:
+            if len(future_closes) == 0:
                 continue
 
             # Calculate barriers
@@ -116,22 +128,29 @@ class TripleBarrierLabeler:
 
             # Check which barrier is hit first
             label_value = 0  # Default: vertical barrier (time expiration)
-            exit_price = future_prices.iloc[-1]  # Price at vertical barrier
+            exit_price = future_closes.iloc[-1]  # Price at vertical barrier
             exit_time = future_times.values[-1]
             exit_reason = "vertical"
 
-            for j, (future_price, future_time) in enumerate(zip(future_prices, future_times)):
-                if future_price >= upper_barrier:
-                    label_value = 1  # Upper barrier hit
-                    exit_price = future_price
-                    exit_time = future_time
-                    exit_reason = "upper"
-                    break
-                elif future_price <= lower_barrier:
-                    label_value = -1  # Lower barrier hit
-                    exit_price = future_price
-                    exit_time = future_time
+            for j in range(len(future_closes)):
+                bar_close = future_closes.iloc[j]
+                bar_high = future_highs.iloc[j]
+                bar_low = future_lows.iloc[j]
+                bar_time = future_times.values[j]
+
+                # Stop loss check (breaching lower barrier)
+                if bar_low <= lower_barrier:
+                    label_value = -1
+                    exit_price = lower_barrier
+                    exit_time = bar_time
                     exit_reason = "lower"
+                    break
+                # Take profit check (breaching upper barrier)
+                elif bar_high >= upper_barrier:
+                    label_value = 1
+                    exit_price = upper_barrier
+                    exit_time = bar_time
+                    exit_reason = "upper"
                     break
 
             # Calculate actual return
@@ -140,13 +159,13 @@ class TripleBarrierLabeler:
             # Calculate MFE (Maximum Favorable Excursion) and MAE (Maximum Adverse Excursion)
             if label_value == 1:  # Won
                 actual_mfe = actual_return
-                actual_mae = min(0, (future_prices.min() - entry_price) / entry_price)
+                actual_mae = min(0, (future_lows.min() - entry_price) / entry_price)
             elif label_value == -1:  # Lost
-                actual_mfe = max(0, (future_prices.max() - entry_price) / entry_price)
+                actual_mfe = max(0, (future_highs.max() - entry_price) / entry_price)
                 actual_mae = actual_return
             else:  # Time expiration
-                actual_mfe = max(0, (future_prices.max() - entry_price) / entry_price)
-                actual_mae = min(0, (future_prices.min() - entry_price) / entry_price)
+                actual_mfe = max(0, (future_highs.max() - entry_price) / entry_price)
+                actual_mae = min(0, (future_lows.min() - entry_price) / entry_price)
 
             # Create Label object with full PIT chain
             try:

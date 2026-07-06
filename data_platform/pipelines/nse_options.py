@@ -138,6 +138,10 @@ class NSEOptionsPipeline:
 
     def _mock_option_chain(self, symbol: str) -> dict[str, Any]:
         """Mock payload for testing or if Upstox is unavailable."""
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: Option chain mock fallback triggered in live/paper environment!")
         return {
             "records": {
                 "expiryDates": ["2026-06-30"],

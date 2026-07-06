@@ -16,6 +16,9 @@ class AnthropicClient:
         self.model = "claude-3-haiku-20240307"
 
     def _mock_response(self, system_prompt: str, user_prompt: str) -> str:
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: LLM mock response triggered in live/paper environment!")
         if "Pre-Market" in system_prompt or "Indian equities day trading analyst" in system_prompt:
             return json.dumps(
                 {

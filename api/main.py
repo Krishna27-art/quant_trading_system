@@ -490,12 +490,11 @@ def bad_trade_diagnosis(symbol: str):
     Diagnose a potentially bad trade by analyzing current price vs entry, SL, target.
     Returns status, slippage, VIX change, VWAP deviation, and other metrics.
     """
+    from database.db_sync import SessionLocal
+    from sqlalchemy import text
+    
+    db = SessionLocal()
     try:
-        from database.db_sync import SessionLocal
-        from sqlalchemy import text
-        
-        db = SessionLocal()
-        
         # Get latest prediction for this symbol
         result = db.execute(
             text("""
@@ -562,10 +561,11 @@ def bad_trade_diagnosis(symbol: str):
             "vwap_dev_pct": vwap_dev_pct,
             "prediction_time": str(prediction_time) if prediction_time else None
         }
-        
     except Exception as e:
         logger.error(f"bad_trade_diagnosis failed: {e}", exc_info=True)
         return {"error": str(e)}
+    finally:
+        db.close()
 
 
 @app.post("/api/calibration/recalibrate")

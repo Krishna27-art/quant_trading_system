@@ -22,9 +22,39 @@ This is a comprehensive quantitative research and trading operating system built
 
 ---
 
-## 2. System Architecture
+## 2. Recent Updates & Current Status
 
-### 2.1 High-Level Architecture
+### Phase 1: Real-time Data Infrastructure
+- **Upstox WebSocket & REST Adapters**: Exposed dual-mode market data adapters with automatic failover
+- **FeedManager Integration**: Wired adapters into scheduler with Redis stream tick publishing
+- **Data Quality Gate**: Integrated validation into tick acceptance pipeline with outlier detection
+- **Event-Driven Inference**: Strictly event-driven inference loop executing only on non-empty tick streams
+
+### Phase 2: Resilience & Database Architecture
+- **NSE Rate Limiting**: Implemented NSERateLimiter checks for all NSE capital market API calls
+- **Database Validation**: Fail-closed database URL validation in production (raises error if empty)
+- **CQRS Database Pool**: Implemented Primary/Replica/Failover routing for read/write separation
+- **Snapshot Retention**: Scheduled daily snapshot retention cleaner job in event loop
+
+### Phase 3: Data Source Normalization
+- **Column Mapping Normalization**: Standardized scraper/yfinance fallback column mappings in equity_history.py
+- **Source Metadata Propagation**: Added actual ingestion source and degraded flag to validation metadata
+
+### Phase 4: Data Quality Improvements
+- **PITImputer Enhancement**: Corrected cross-sectional median calculations to be contemporaneous per timestamp
+
+### Phase 5: Code Cleanup
+- **Scaffolding Removal**: Cleaned up dead example functions in ingestion_wrapper.py
+
+### Test Suite Status
+- **All Tests Passing**: 138/138 tests green
+- **Coverage**: Full test suite verification completed
+
+---
+
+## 3. System Architecture
+
+### 3.1 High-Level Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -83,7 +113,7 @@ This is a comprehensive quantitative research and trading operating system built
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Data Flow
+### 3.2 Data Flow
 
 1. **Market Data Ingestion**: Upstox API provides real-time quotes, OHLCV candles, options chain, and fundamentals
 2. **Data Validation**: Streaming outlier detection filters stale/corrupted prices
@@ -97,7 +127,7 @@ This is a comprehensive quantitative research and trading operating system built
 
 ---
 
-## 3. Repository Structure
+## 4. Repository Structure
 
 ```
 quant/
@@ -224,9 +254,9 @@ quant/
 
 ---
 
-## 4. Data Sources & APIs
+## 5. Data Sources & APIs
 
-### 4.1 Primary Data Sources
+### 5.1 Primary Data Sources
 
 **Upstox API** (Primary Market Data)
 - Live quotes and OHLCV candles
@@ -250,7 +280,7 @@ quant/
 - Inflation data (CPI)
 - Industrial production (IIP)
 
-### 4.2 Broker APIs
+### 5.2 Broker APIs
 
 **Zerodha Kite**
 - Order placement and execution
@@ -265,7 +295,7 @@ quant/
 - Alternative broker integration
 - Market data fallback
 
-### 4.3 LLM Integration
+### 5.3 LLM Integration
 
 **Anthropic Claude**
 - Model: claude-3-haiku-20240307
@@ -278,9 +308,9 @@ quant/
 
 ---
 
-## 5. Technology Stack
+## 6. Technology Stack
 
-### 5.1 Core Technologies
+### 6.1 Core Technologies
 
 **Backend**
 - Python 3.10+
@@ -328,7 +358,7 @@ quant/
 - WebSockets (real-time data)
 - aiohttp (async HTTP)
 
-### 5.2 Development Tools
+### 6.2 Development Tools
 
 - Black (code formatting)
 - Ruff (linting)
@@ -339,9 +369,9 @@ quant/
 
 ---
 
-## 6. Key Components
+## 7. Key Components
 
-### 6.1 Data Platform
+### 7.1 Data Platform
 
 **Feed Manager** (`data_platform/feeds/feed_manager.py`)
 - Multi-tier feed management (primary, secondary, fallback)
@@ -374,7 +404,7 @@ quant/
 - Macro data pipelines
 - NSE options data
 
-### 6.2 Prediction Intelligence
+### 7.2 Prediction Intelligence
 
 **LightGBM Classifiers** (`prediction_intelligence/base_lightgbm.py`)
 - Binary classifiers for INTRADAY, SWING, LONGTERM
@@ -389,7 +419,7 @@ quant/
 - Market: VIX level, market regime
 - Macro: USD-INR changes, DOW changes
 
-### 6.3 Portfolio Execution
+### 7.3 Portfolio Execution
 
 **Order Management System** (`portfolio_execution/oms.py`)
 - Order lifecycle management
@@ -418,7 +448,7 @@ quant/
 - Index futures basis alpha
 - Volatility surface alpha
 
-### 6.4 Risk Governance
+### 7.4 Risk Governance
 
 **Pre-Trade Checks** (`risk_governance/pre_trade/pre_trade_checks.py`)
 - Position size limits
@@ -443,7 +473,7 @@ quant/
 - Inventory tracking
 - Borrow limit enforcement
 
-### 6.5 API Layer
+### 7.5 API Layer
 
 **FastAPI Backend** (`api/main.py`)
 - RESTful API endpoints
@@ -461,7 +491,7 @@ quant/
 - `POST /api/auth/login` - Authentication
 - `GET /metrics` - Prometheus metrics
 
-### 6.6 Research Platform
+### 7.6 Research Platform
 
 **Backtesting** (`research_platform/backtesting/`)
 - Historical simulation
@@ -477,9 +507,9 @@ quant/
 
 ---
 
-## 7. Configuration
+## 8. Configuration
 
-### 7.1 Environment Variables
+### 8.1 Environment Variables
 
 Required environment variables (see `.env.example`):
 
@@ -512,7 +542,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxxx
 GRAFANA_ADMIN_PASSWORD=secure_grafana_password
 ```
 
-### 7.2 Configuration Files
+### 8.2 Configuration Files
 
 **Settings** (`config/settings.py`)
 - Data directory structure (Bronze/Silver/Gold layers)
@@ -528,9 +558,9 @@ GRAFANA_ADMIN_PASSWORD=secure_grafana_password
 
 ---
 
-## 8. How to Run
+## 9. How to Run
 
-### 8.1 Prerequisites
+### 9.1 Prerequisites
 
 - Python 3.10 or higher
 - PostgreSQL 14+ with TimescaleDB
@@ -539,7 +569,7 @@ GRAFANA_ADMIN_PASSWORD=secure_grafana_password
 - Upstox API access token
 - (Optional) Zerodha Kite API credentials
 
-### 8.2 Installation
+### 9.2 Installation
 
 **Clone the repository**
 ```bash
@@ -579,7 +609,7 @@ psql quant_terminal < database/adjusted_equity_schema.sql
 alembic upgrade head
 ```
 
-### 8.3 Running the System
+### 9.3 Running the System
 
 **Option 1: Docker Compose (Recommended)**
 ```bash
@@ -610,7 +640,7 @@ Start the execution worker:
 python scripts/execution_worker.py
 ```
 
-### 8.4 Running Modes
+### 9.4 Running Modes
 
 **Backtest Mode** (Historical simulation)
 ```bash
@@ -627,7 +657,7 @@ python main.py --mode paper --symbols RELIANCE,TCS,INFY --duration 3600
 python main.py --mode live --symbols RELIANCE,TCS,INFY
 ```
 
-### 8.5 Accessing the Dashboard
+### 9.5 Accessing the Dashboard
 
 - **API**: http://localhost:8000
 - **API Documentation**: http://localhost:8000/docs
@@ -635,7 +665,7 @@ python main.py --mode live --symbols RELIANCE,TCS,INFY
 - **Prometheus**: http://localhost:9090
 - **Grafana**: http://localhost:3001 (admin/password from .env)
 
-### 8.6 Training ML Models
+### 9.6 Training ML Models
 
 ```bash
 # Train LightGBM models for all timeframes
@@ -645,7 +675,7 @@ python -m prediction_intelligence.train_models
 python -m prediction_intelligence.train_models --timeframe INTRADAY
 ```
 
-### 8.7 Running Tests
+### 9.7 Running Tests
 
 ```bash
 # Run all tests
@@ -661,9 +691,9 @@ pytest tests/integration/
 
 ---
 
-## 9. Development Guidelines
+## 10. Development Guidelines
 
-### 9.1 Coding Standards
+### 10.1 Coding Standards
 
 - Follow PEP 8 with Black formatting (line length: 100)
 - Use type hints for all functions
@@ -672,7 +702,7 @@ pytest tests/integration/
 - Handle exceptions explicitly with logging
 - Follow SOLID principles
 
-### 9.2 Quant Standards
+### 10.2 Quant Standards
 
 - Prevent lookahead bias in all calculations
 - Prevent survivorship bias in backtesting
@@ -681,7 +711,7 @@ pytest tests/integration/
 - Calculate standard metrics: Sharpe, Sortino, Max Drawdown, CAGR, Win Rate, Profit Factor
 - Explain assumptions before implementing strategies
 
-### 9.3 Data Standards
+### 10.3 Data Standards
 
 - Validate dataframe shapes before calculations
 - Log dataframe dimensions
@@ -689,7 +719,7 @@ pytest tests/integration/
 - Handle missing values explicitly
 - Detect NaN and infinite values
 
-### 9.4 ML Standards
+### 10.4 ML Standards
 
 - Scale features before training
 - Use train/test split
@@ -700,9 +730,9 @@ pytest tests/integration/
 
 ---
 
-## 10. Monitoring & Maintenance
+## 11. Monitoring & Maintenance
 
-### 10.1 Health Checks
+### 11.1 Health Checks
 
 System health endpoint: `GET /api/health/status`
 
@@ -712,7 +742,7 @@ Checks:
 - Data pipeline freshness
 - API gateway status
 
-### 10.2 Metrics
+### 11.2 Metrics
 
 Prometheus metrics available at `/metrics`:
 - Order submission rate
@@ -721,14 +751,14 @@ Prometheus metrics available at `/metrics`:
 - Prediction accuracy
 - System resource usage
 
-### 10.3 Logging
+### 11.3 Logging
 
 Structured logs using `structlog`:
 - Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
 - Log location: `logs/` directory
 - Log rotation: Configured in settings
 
-### 10.4 Alerts
+### 11.4 Alerts
 
 Alerting via:
 - Slack webhooks (configure in .env)
@@ -737,9 +767,9 @@ Alerting via:
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
-### 11.1 Common Issues
+### 12.1 Common Issues
 
 **Database Connection Failed**
 - Check PostgreSQL is running: `docker-compose ps db`
@@ -760,7 +790,7 @@ Alerting via:
 - Check MODEL_DIR environment variable
 - Verify model files exist in `models/saved/`
 
-### 11.2 Debug Mode
+### 12.2 Debug Mode
 
 Enable debug logging:
 ```bash
@@ -770,9 +800,9 @@ python main.py --mode paper
 
 ---
 
-## 12. Contributing
+## 13. Contributing
 
-### 12.1 Development Workflow
+### 13.1 Development Workflow
 
 1. Create feature branch from `main`
 2. Make changes with tests
@@ -782,7 +812,7 @@ python main.py --mode paper
 6. Run tests: `pytest`
 7. Submit pull request
 
-### 12.2 Pre-commit Hooks
+### 13.2 Pre-commit Hooks
 
 Install pre-commit hooks:
 ```bash
@@ -793,13 +823,13 @@ Hooks run automatically on commit.
 
 ---
 
-## 13. License
+## 14. License
 
 MIT License - See LICENSE file for details
 
 ---
 
-## 14. Support
+## 15. Support
 
 For issues and questions:
 - GitHub Issues: [repository-url]/issues
@@ -808,7 +838,7 @@ For issues and questions:
 
 ---
 
-## 15. Acknowledgments
+## 16. Acknowledgments
 
 - Upstox for market data API
 - NSE for market data

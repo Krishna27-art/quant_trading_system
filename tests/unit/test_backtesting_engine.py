@@ -483,3 +483,45 @@ class TestRiskManagement:
         engine = BacktestingEngine(config)
 
         assert engine.config.max_positions == 5
+
+    def test_max_adv_participation_rate_limit(self):
+        """Test that ADV limit caps order sizes correctly."""
+        config = BacktestConfig(
+            start_date=datetime(2024, 1, 1),
+            end_date=datetime(2024, 1, 31),
+            initial_capital=10000000,
+            position_size=0.1,  # ₹1,000,000 target position size
+            max_adv_participation_rate=0.01,  # 1% ADV limit
+        )
+        engine = BacktestingEngine(config)
+        engine._initialize_portfolio()
+
+        # volume_sma20 = 1000 shares. 1% cap = 10 shares.
+        price_df = pd.DataFrame([
+            {
+                "date": datetime(2024, 1, 1),
+                "symbol": "RELIANCE",
+                "close": 100.0,
+                "adjusted_close": 100.0,
+                "volume": 1000.0,
+                "volume_sma20": 1000.0,
+            }
+        ])
+
+        class DummyPrediction:
+            def __init__(self, date, symbol, prediction, confidence):
+                self.date = date
+                self.symbol = symbol
+                self.prediction = prediction
+                self.confidence = confidence
+
+        predictions = [DummyPrediction(datetime(2024, 1, 1), "RELIANCE", 2, 1.0)]
+
+        # Run rebalance
+        engine._rebalance_portfolio(datetime(2024, 1, 1), predictions, price_df)
+
+        portfolio = engine._current_portfolio
+        assert len(portfolio.positions) == 1
+        pos = portfolio.positions[0]
+        # Should be capped at 10 shares (1% of 1000 ADV)
+        assert pos.shares == 10.0

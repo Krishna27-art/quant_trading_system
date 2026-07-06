@@ -107,10 +107,47 @@ def build_label(
     sl = -abs(sl_pct) if sl_pct is not None else default_sl  # Ensure negative
     horizon = default_horizon
 
+    # Calculate symbol-specific transaction costs
+    import os
+    symbol = "DEFAULT"
+    if "symbol" in df.columns:
+        symbol = str(df["symbol"].iloc[0]).upper()
+    elif "__symbol__" in df.columns:
+        symbol = str(df["__symbol__"].iloc[0]).upper()
+
+    SYMBOL_SLIPPAGE_MULTIPLIERS = {
+        "RELIANCE": 0.8,
+        "TCS": 0.8,
+        "HDFCBANK": 0.8,
+        "ICICIBANK": 0.8,
+        "INFY": 0.9,
+        "SBIN": 0.9,
+        "ITC": 1.0,
+        "HINDUNILVR": 1.0,
+        "KOTAKBANK": 0.9,
+        "AXISBANK": 1.0,
+        "LT": 1.2,
+        "ASIANPAINT": 1.0,
+        "MARUTI": 1.2,
+        "BAJFINANCE": 1.5,
+        "WIPRO": 1.5,
+    }
+    BASE_ROUNDTRIP_COST_PCT = 0.004
+    slippage_multiplier = SYMBOL_SLIPPAGE_MULTIPLIERS.get(symbol, 1.0)
+    total_cost_pct = BASE_ROUNDTRIP_COST_PCT + (0.0005 * slippage_multiplier)
+
+    # Cost-adjusted target barrier configuration
+    if side.lower() == "long":
+        upper_barrier_pct = tp + total_cost_pct
+        lower_barrier_pct = sl
+    else:
+        upper_barrier_pct = tp
+        lower_barrier_pct = -abs(sl) - total_cost_pct
+
     # Instantiate labeler
     labeler = TripleBarrierLabeler(
-        upper_barrier_pct=tp,
-        lower_barrier_pct=sl,
+        upper_barrier_pct=upper_barrier_pct,
+        lower_barrier_pct=lower_barrier_pct,
         vertical_barrier_days=horizon,
         validate_labels=False,  # Skip hard raise to handle training skew robustly
     )

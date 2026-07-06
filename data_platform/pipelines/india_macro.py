@@ -84,6 +84,10 @@ class IndiaMacroPipeline:
             )
 
     def _mock_inflation_data(self) -> pd.DataFrame:
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: Macro inflation mock fallback triggered in live/paper environment!")
         dates = pd.date_range(end=pd.Timestamp.now(), periods=12, freq="ME")
         return pd.DataFrame(
             {"date": dates, "cpi_yoy": [5.0, 5.1, 4.9, 4.8, 5.2, 5.5, 5.3, 5.0, 4.7, 4.5, 4.8, 5.1]}

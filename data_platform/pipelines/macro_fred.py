@@ -63,6 +63,10 @@ class FREDDataPipeline:
 
     def _mock_data(self, series_id: str) -> pd.DataFrame:
         """Fallback mock data if API key is missing or request fails."""
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: FRED data mock fallback triggered in live/paper environment!")
         logger.info(f"Returning mocked data for FRED series: {series_id}")
         dates = pd.date_range(end=datetime.now(), periods=10, freq="D")
         return pd.DataFrame({"date": dates, "value": [2.5] * 10})  # Dummy value

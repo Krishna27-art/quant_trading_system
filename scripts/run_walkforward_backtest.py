@@ -67,6 +67,10 @@ def feature_engineering(df):
     df["atr_14d"] = df.groupby("symbol")["tr"].rolling(14).mean().reset_index(0, drop=True)
     df["atr_pct"] = df["atr_14d"] / df["close"]
 
+    df["volume_sma20"] = df.groupby("symbol")["volume"].transform(
+        lambda x: x.rolling(20, min_periods=1).mean()
+    )
+
     all_feats = []
     for sym, group in df.groupby("symbol"):
         group = group.sort_values("date")
@@ -80,6 +84,8 @@ def feature_engineering(df):
         feats["close"] = group["close"].values
         feats["adjusted_close"] = group["close"].values
         feats["atr_pct"] = group["atr_pct"].values
+        feats["volume"] = group["volume"].values
+        feats["volume_sma20"] = group["volume_sma20"].values
         all_feats.append(feats)
         
     out_df = pd.concat(all_feats, ignore_index=True)
@@ -237,10 +243,11 @@ def run_walk_forward(
                 slippage_rate=0.0005,
                 stop_loss=atr_stop_loss,
                 take_profit=atr_take_profit,
+                max_adv_participation_rate=0.01,
             )
 
             engine = BacktestingEngine(config)
-            price_data = df[["date", "symbol", "adjusted_close", "close"]].copy()
+            price_data = df[["date", "symbol", "adjusted_close", "close", "volume", "volume_sma20"]].copy()
             results = engine.run_backtest(predictions=signals, price_data=price_data)
 
             all_results.append({
@@ -270,26 +277,30 @@ def run_walk_forward(
         return
 
     results_df = pd.DataFrame(all_results)
+    results_df = results_df.rename(columns={
+        "total_return": "net_return",
+        "sharpe_ratio": "net_sharpe",
+    })
 
     print("\n" + "=" * 70)
-    print("WALK-FORWARD BACKTEST RESULTS (MetaEnsemble SWING)")
+    print("WALK-FORWARD BACKTEST RESULTS (MetaEnsemble SWING — COST ADJUSTED)")
     print("=" * 70)
     print(results_df.to_string(index=False))
     print("\n" + "=" * 70)
-    print("AGGREGATED STATISTICS")
+    print("AGGREGATED STATISTICS (NET OF COMMISSIONS, STT, SLIPPAGE, AND ADV CAPPED)")
     print("=" * 70)
 
     print(f"Total Windows: {len(results_df)}")
     print(f"Win Rate (mean): {results_df['win_rate'].mean():.2%} ± {results_df['win_rate'].std():.2%}")
-    print(f"Sharpe Ratio (mean): {results_df['sharpe_ratio'].mean():.2f} ± {results_df['sharpe_ratio'].std():.2f}")
-    print(f"Total Return (mean): {results_df['total_return'].mean():.2%} ± {results_df['total_return'].std():.2%}")
+    print(f"Net Sharpe Ratio (mean): {results_df['net_sharpe'].mean():.2f} ± {results_df['net_sharpe'].std():.2f}")
+    print(f"Net Return (mean): {results_df['net_return'].mean():.2%} ± {results_df['net_return'].std():.2%}")
     print(f"Max Drawdown (mean): {results_df['max_drawdown'].mean():.2%} ± {results_df['max_drawdown'].std():.2%}")
     print(f"Total Trades (mean): {results_df['total_trades'].mean():.0f}")
 
-    profitable_windows = (results_df['total_return'] > 0).sum()
+    profitable_windows = (results_df['net_return'] > 0).sum()
     print(f"\nProfitable Windows: {profitable_windows}/{len(results_df)} ({profitable_windows/len(results_df):.1%})")
 
-    positive_sharpe_windows = (results_df['sharpe_ratio'] > 0).sum()
+    positive_sharpe_windows = (results_df['net_sharpe'] > 0).sum()
     print(f"Positive Sharpe Windows: {positive_sharpe_windows}/{len(results_df)} ({positive_sharpe_windows/len(results_df):.1%})")
 
     print("=" * 70)

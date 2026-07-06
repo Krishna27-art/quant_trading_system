@@ -95,6 +95,9 @@ class BacktestConfig(BaseModel):
     take_profit: float | None = Field(
         default=None, description="Optional take-profit threshold as a positive fraction"
     )
+    max_adv_participation_rate: float = Field(
+        default=0.01, description="Capping simulated position size at some fraction of ADV, e.g. 1% (0.01)"
+    )
 
     # Date alignment
     max_date_alignment_lookback_days: int = Field(
@@ -438,6 +441,20 @@ class BacktestingEngine:
 
             shares = position_value / price
 
+            # Capacity Constraint / ADV Participation Capping
+            adv = self._get_symbol_adv(pred.symbol, date, price_data)
+            if adv is not None and adv > 0:
+                max_shares = adv * self.config.max_adv_participation_rate
+                if shares > max_shares:
+                    old_shares = shares
+                    shares = max_shares
+                    position_value = shares * price
+                    self.logger.info(
+                        f"ADV cap triggered for {pred.symbol}: Capped shares at {shares:.2f} "
+                        f"(participation rate {self.config.max_adv_participation_rate:.1%} of {adv:.2f} ADV), "
+                        f"restricted from {old_shares:.2f} shares."
+                    )
+
             buy_cost = self.cost_calculator.calculate_buy_cost(shares, price)
 
             total_cost = (shares * price) + buy_cost
@@ -487,6 +504,16 @@ class BacktestingEngine:
             prices[row["symbol"]] = row["adjusted_close"]
 
         return prices
+
+    def _get_symbol_adv(self, symbol: str, date: datetime, price_data: pd.DataFrame) -> float | None:
+        """Get the 20-day Average Daily Volume (ADV) for a symbol on a specific date."""
+        if "volume_sma20" not in price_data.columns:
+            return None
+        symbol_data = price_data[(price_data["symbol"] == symbol) & (price_data["date"] == date)]
+        if symbol_data.empty:
+            return None
+        val = symbol_data["volume_sma20"].iloc[0]
+        return float(val) if not pd.isna(val) else None
 
     def _evaluate_close_reason(
         self, position: Position, predictions: list[Any], current_price: float

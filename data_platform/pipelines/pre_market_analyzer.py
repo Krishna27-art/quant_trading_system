@@ -498,6 +498,10 @@ class PreMarketAnalyzer:
 
     # Mock data methods for development
     def _mock_global_markets(self) -> GlobalMarketSnapshot:
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: Global markets mock fallback triggered in live/paper environment!")
         return GlobalMarketSnapshot(
             us_snp500=5234.18,
             us_snp500_change_pct=0.65,
@@ -517,6 +521,10 @@ class PreMarketAnalyzer:
         )
 
     def _mock_indian_indicators(self) -> IndianMarketIndicators:
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: Indian market indicators mock fallback triggered in live/paper environment!")
         return IndianMarketIndicators(
             gift_nifty=24280.50,
             gift_nifty_change_pct=0.72,
@@ -538,6 +546,10 @@ class PreMarketAnalyzer:
         )
 
     def _mock_news_impacts(self) -> list[NewsImpact]:
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: News impacts mock fallback triggered in live/paper environment!")
         return [
             NewsImpact(
                 headline="RBI holds repo rate at 6.5%, focuses on inflation",
@@ -566,6 +578,10 @@ class PreMarketAnalyzer:
         ]
 
     def _mock_fii_activity(self) -> FIIActivity:
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: FII activity mock fallback triggered in live/paper environment!")
         return FIIActivity(
             fii_net_buy_sell_cr=1250.50,
             dii_net_buy_sell_cr=890.25,

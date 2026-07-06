@@ -405,6 +405,10 @@ class InstitutionalWatchlistBuilder:
 
     def _mock_stock_metrics(self, universe: list[dict]) -> list[StockMetrics]:
         """Generate mock stock metrics for development."""
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: Stock metrics mock fallback triggered in live/paper environment!")
         import random
         
         metrics = []

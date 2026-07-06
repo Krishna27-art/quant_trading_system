@@ -437,6 +437,11 @@ def main():
         default=15,
         help="Ticking loop running time in seconds (for paper/live demo)",
     )
+    parser.add_argument(
+        "--i-know-this-is-fake",
+        action="store_true",
+        help="Acknowledge that main.py backtest mode uses synthetic mock bars, not real market historical backtests.",
+    )
     args = parser.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",")]
@@ -503,6 +508,9 @@ def main():
     orchestrator.initialize_session(prev_day_data)
 
     if config.mode == ExecutionMode.BACKTEST:
+        if not args.i_know_this_is_fake:
+            logger.critical("FATAL: Cannot run main.py backtest mode without acknowledging it is synthetic. Use --i-know-this-is-fake flag.")
+            sys.exit(1)
         logger.info(f"Generating mock historical 1m bars for date {args.date}...")
         historical_ticks = []
         for sym in symbols:

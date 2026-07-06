@@ -140,6 +140,10 @@ class BaseFormationDetector:
 
     def _mock_base_detection(self, symbol: str) -> Optional[BaseMetrics]:
         """Generate mock base detection for development."""
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: Base detection mock fallback triggered in live/paper environment!")
         import random
         
         # 40% chance of having a base

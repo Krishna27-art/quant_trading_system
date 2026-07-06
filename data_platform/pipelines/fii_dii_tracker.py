@@ -350,6 +350,10 @@ class FIIDIIAnalyzer:
 
     def _mock_daily_activity(self, date: datetime) -> FIIActivitySnapshot:
         """Generate mock daily FII/DII activity."""
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: FII/DII activity mock fallback triggered in live/paper environment!")
         import random
         
         return FIIActivitySnapshot(
@@ -379,6 +383,10 @@ class FIIDIIAnalyzer:
         end_date: datetime
     ) -> CapitalFlowTrend:
         """Generate mock flow trend analysis."""
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: Capital flow trend mock fallback triggered in live/paper environment!")
         import random
         
         return CapitalFlowTrend(
@@ -400,6 +408,10 @@ class FIIDIIAnalyzer:
 
     def _mock_sector_exposure(self) -> list[SectorFIIData]:
         """Generate mock sector FII exposure."""
+        import os
+        env = os.getenv("ENV", "LOCAL")
+        if env.upper() in ("LIVE", "PAPER"):
+            raise RuntimeError("Fatal: Sector exposure mock fallback triggered in live/paper environment!")
         sectors = [
             "Financial Services", "Technology", "Consumer Goods", 
             "Energy", "Healthcare", "Materials", "Automobile",

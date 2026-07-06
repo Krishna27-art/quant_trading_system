@@ -15,6 +15,7 @@ from api.main import app
 @pytest.fixture
 def api_client():
     # Set required environment variables for JWT configuration
+    os.environ["ENV"] = "TEST"
     os.environ["JWT_SECRET_KEY"] = "test-secret-key-1234567890-test-secret-key"
     os.environ["ADMIN_USERNAME"] = "admin"
     os.environ["ADMIN_PASSWORD"] = "strong-password-123"

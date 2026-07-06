@@ -6,37 +6,10 @@ logger = get_logger("portfolio_risk")
 
 from scipy.stats import t as student_t
 
-# Static Sector Mapping for Nifty 30 MVP
-SECTOR_MAP = {
-    "HDFCBANK": "Financials",
-    "ICICIBANK": "Financials",
-    "SBIN": "Financials",
-    "KOTAKBANK": "Financials",
-    "BAJFINANCE": "Financials",
-    "BAJAJFINSV": "Financials",
-    "RELIANCE": "Energy",
-    "ONGC": "Energy",
-    "NTPC": "Energy",
-    "POWERGRID": "Energy",
-    "COALINDIA": "Energy",
-    "TCS": "IT",
-    "INFY": "IT",
-    "HCLTECH": "IT",
-    "TATAMOTORS": "Auto",
-    "M&M": "Auto",
-    "MARUTI": "Auto",
-    "ITC": "FMCG",
-    "HINDUNILVR": "FMCG",
-    "ASIANPAINT": "FMCG",
-    "TITAN": "Consumer",
-    "LT": "Capital Goods",
-    "BHARTIARTL": "Telecom",
-    "SUNPHARMA": "Pharma",
-    "ULTRACEMCO": "Materials",
-    "TATASTEEL": "Materials",
-    "ADANIENT": "Conglomerate",
-    "ADANIPORTS": "Infrastructure",
-}
+# Build Sector Mapping from the central universe configuration
+from config.universe import NSE_UNIVERSE
+
+SECTOR_MAP = {stock["symbol"]: stock["sector"] for stock in NSE_UNIVERSE}
 
 
 class PortfolioRiskEngine:

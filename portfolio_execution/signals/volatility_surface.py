@@ -79,24 +79,65 @@ class VolatilitySurfaceAlpha(AlphaModel):
         return raw_signal
 
 
+import numpy as np
+
 class VolatilityRegimeDetector:
     """
     Detects the current market volatility regime based on India VIX.
+    Uses a 3-State Hidden Markov Model (HMM) to capture state transitions 
+    and persistence, rather than brittle hardcoded thresholds.
     """
 
-    def __init__(self):
-        # Typical historical percentiles/levels for India VIX
-        self.threshold_low = 12.0
-        self.threshold_high = 20.0
-        self.threshold_crisis = 30.0
+    def __init__(self, n_components: int = 3):
+        self.n_components = n_components
+        # Typical means for India VIX: Low (13), Normal (18), Crisis (28)
+        self.emission_means = np.array([[13.0], [18.0], [28.0]])
+        
+        try:
+            from hmmlearn.hmm import GaussianHMM
+            self.model = GaussianHMM(n_components=self.n_components, covariance_type="diag")
+            self.model.means_ = self.emission_means
+            self.model.covars_ = np.array([[2.0], [3.0], [10.0]])
+            # Simple transition matrix favoring persistence
+            self.model.transmat_ = np.array([
+                [0.95, 0.04, 0.01],
+                [0.10, 0.85, 0.05],
+                [0.05, 0.15, 0.80]
+            ])
+            self.model.startprob_ = np.array([0.6, 0.3, 0.1])
+        except ImportError:
+            self.model = None
 
-    def detect_regime(self, current_vix: float) -> VolRegime:
-        """Categorize the current VIX level."""
-        if current_vix < self.threshold_low:
+    def fit(self, historical_vix: np.ndarray):
+        """Fit the HMM on historical VIX data."""
+        if self.model is not None and len(historical_vix) >= 30:
+            self.model.fit(historical_vix.reshape(-1, 1))
+
+    def detect_regime(self, current_vix: float, recent_history: list[float] | None = None) -> VolRegime:
+        """Categorize the current VIX level using the HMM or fallback."""
+        if self.model is not None and recent_history is not None and len(recent_history) >= 5:
+            seq = np.array(recent_history + [current_vix]).reshape(-1, 1)
+            try:
+                states = self.model.predict(seq)
+                state = states[-1]
+                
+                # Map state to VolRegime based on sorted means
+                means = self.model.means_.flatten()
+                sorted_indices = np.argsort(means)
+                
+                if state == sorted_indices[0]:
+                    return VolRegime.LOW_VOL
+                elif state == sorted_indices[1]:
+                    return VolRegime.NORMAL
+                else:
+                    return VolRegime.CRISIS
+            except Exception as e:
+                logger.warning(f"HMM prediction failed: {e}. Falling back to thresholds.")
+
+        # Fallback to thresholds if hmmlearn is missing, not enough history, or error
+        if current_vix < 15.0:
             return VolRegime.LOW_VOL
-        elif current_vix < self.threshold_high:
+        elif current_vix < 22.0:
             return VolRegime.NORMAL
-        elif current_vix < self.threshold_crisis:
-            return VolRegime.HIGH_VOL
         else:
             return VolRegime.CRISIS

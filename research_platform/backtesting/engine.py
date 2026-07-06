@@ -22,6 +22,7 @@ from research_platform.backtesting.transaction_costs import (
     TransactionCostCalculator,
     TransactionCostModel,
 )
+from portfolio_execution.signals.volatility_surface import VolatilityRegimeDetector, VolRegime
 from research_platform.research.deflated_sharpe import (
     DeflatedSharpeCalculator,
     DeflatedSharpeConfig,
@@ -216,6 +217,14 @@ class BacktestResult(BaseModel):
         default_factory=lambda: deque(maxlen=50000), description="All positions"
     )
 
+    # Validation
+    validation_is_valid: bool | None = Field(None, description="Passed statistical validation")
+    validation_p_value: float | None = Field(None, description="Statistical p-value")
+    validation_kelly_fraction: float | None = Field(None, description="Kelly fraction")
+    validation_warning: str | None = Field(None, description="Validation warning message")
+    leakage_detected: bool | None = Field(None, description="Leakage detected flag")
+    leakage_reason: str | None = Field(None, description="Leakage detection reason")
+
     # Metadata
     backtest_start: datetime = Field(
         default_factory=datetime.now, description="When backtest started"
@@ -256,6 +265,12 @@ class BacktestingEngine:
 
         # Initialize deflated Sharpe calculator
         self.deflated_sharpe_calc = DeflatedSharpeCalculator(DeflatedSharpeConfig())
+        
+        # Initialize validators
+        from research_platform.backtesting.leakage_detector import LeakageDetector
+        from research_platform.backtesting.statistical_validator import StatisticalValidator
+        self.leakage_detector = LeakageDetector()
+        self.statistical_validator = StatisticalValidator()
 
     def run_backtest(self, predictions: list[Any], price_data: pd.DataFrame) -> BacktestResult:
         """
@@ -268,6 +283,12 @@ class BacktestingEngine:
         Returns:
             BacktestResult
         """
+        self.logger.info("Starting backtest...")
+        
+        # Initialize Volatility Regime Detector
+        self.regime_detector = VolatilityRegimeDetector()
+        self.logger.info("Initialized HMM Volatility Regime Detector.")
+        
         self.logger.info(
             f"Starting backtest from {self.config.start_date} to {self.config.end_date}"
         )
@@ -308,7 +329,7 @@ class BacktestingEngine:
         self._liquidate_open_positions(price_data)
 
         # Calculate results
-        result = self._calculate_results()
+        result = self._calculate_results(predictions, price_data)
 
         self.logger.info(f"Backtest completed. Total return: {result.total_return:.2%}")
 
@@ -441,10 +462,47 @@ class BacktestingEngine:
 
             price = base_price * (1 + self.config.slippage_rate)
 
-            position_value = min(
-                self.config.position_size * self._current_portfolio.total_value,
-                self.config.max_position_size * self._current_portfolio.total_value,
-            )
+            # Phase 2: Fractional Kelly Position Sizing
+            win_prob = getattr(pred, "win_probability", 0.5)
+            b = getattr(pred, "risk_reward_ratio", None) or 1.5 
+            kelly_f = win_prob - ((1.0 - win_prob) / b)
+            
+            # Half-Kelly for risk management
+            half_kelly = max(0.0, kelly_f / 2.0)
+            
+            # Default to configured position size if kelly is smaller, 
+            # and bound by max_position_size
+            target_fraction = max(self.config.position_size, half_kelly)
+            target_fraction = min(target_fraction, self.config.max_position_size)
+
+            # Phase 3: Regime-Conditioned Sizing
+            # 1. Estimate current market VIX (proxy via cross-sectional realized vol if INDIAVIX missing)
+            current_vix = 18.0  # Default NORMAL
+            if "INDIAVIX" in price_data["symbol"].values:
+                vix_data = price_data[(price_data["symbol"] == "INDIAVIX") & (price_data["date"] <= date)]
+                if not vix_data.empty:
+                    current_vix = vix_data.iloc[-1]["close"]
+            else:
+                # Proxy: recent 20-day standard deviation of all symbols
+                recent_data = price_data[price_data["date"] <= date].tail(20 * len(self._current_portfolio.positions or [1]))
+                if not recent_data.empty:
+                    proxy_vol = recent_data.groupby("symbol")["close"].pct_change().std() * np.sqrt(252) * 100
+                    if proxy_vol > 0 and not pd.isna(proxy_vol):
+                        current_vix = proxy_vol
+
+            regime = self.regime_detector.detect_regime(current_vix)
+            
+            # 2. Scale down leverage if in High Volatility / Crisis
+            if regime == VolRegime.CRISIS:
+                target_fraction *= 0.25  # Cut size by 75%
+                self.logger.info(f"CRISIS Regime Active: Scaled down {pred.symbol} position to {target_fraction:.2%}")
+            elif regime == VolRegime.HIGH_VOL:
+                target_fraction *= 0.50  # Cut size by 50%
+                self.logger.info(f"HIGH_VOL Regime Active: Scaled down {pred.symbol} position to {target_fraction:.2%}")
+            elif regime == VolRegime.LOW_VOL:
+                target_fraction = min(target_fraction * 1.25, self.config.max_position_size) # Slight leverage in pure bull
+                
+            position_value = target_fraction * self._current_portfolio.total_value
 
             shares = position_value / price
 
@@ -604,7 +662,7 @@ class BacktestingEngine:
                 f"PnL={position.pnl:.2f} ({position.pnl_pct:.2%})"
             )
 
-    def _calculate_results(self) -> BacktestResult:
+    def _calculate_results(self, predictions: list[Any] = None, price_data: pd.DataFrame = None) -> BacktestResult:
         """Calculate backtest results."""
         if not self._portfolio_history:
             raise ValueError("No portfolio history to calculate results")
@@ -691,6 +749,31 @@ class BacktestingEngine:
         except Exception as ex:
             self.logger.warning(f"Failed to calculate advanced performance metrics: {ex}")
 
+        # Validation checks
+        validation_is_valid = None
+        validation_p_value = None
+        validation_kelly_fraction = None
+        validation_warning = None
+        leakage_detected = None
+        leakage_reason = None
+        
+        try:
+            val_res = self.statistical_validator.validate_returns(returns_clean)
+            validation_is_valid = val_res.is_valid
+            validation_p_value = val_res.p_value
+            validation_kelly_fraction = val_res.kelly_fraction
+            validation_warning = val_res.warning_message
+        except Exception as ex:
+            self.logger.warning(f"Failed to run statistical validation: {ex}")
+            
+        try:
+            if predictions is not None and price_data is not None:
+                leak_res = self.leakage_detector.detect_leakage(predictions, price_data)
+                leakage_detected = leak_res.get("leakage_detected")
+                leakage_reason = leak_res.get("reason")
+        except Exception as ex:
+            self.logger.warning(f"Failed to run leakage detection: {ex}")
+
         result = BacktestResult(
             config=self.config,
             total_return=total_return,
@@ -719,6 +802,12 @@ class BacktestingEngine:
             equity_curve=equity_curve,
             returns_series=returns_clean,
             all_positions=self._all_positions,
+            validation_is_valid=validation_is_valid,
+            validation_p_value=validation_p_value,
+            validation_kelly_fraction=validation_kelly_fraction,
+            validation_warning=validation_warning,
+            leakage_detected=leakage_detected,
+            leakage_reason=leakage_reason,
         )
 
         return result

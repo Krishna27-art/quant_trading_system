@@ -13,13 +13,12 @@ import {
 
 /* ============================================================================
    DESIGN TOKENS
-   Institutional dark terminal. Base: slate-950/900. Signature accent: amber
-   (a nod to the amber-phosphor heritage of Bloomberg-era terminals) used only
+   Institutional dark terminal. Base: slate-950/900. Signature accent: green
    for AI/prediction-confidence elements. Cyan is the secondary data-ink color
    for chart overlays. Emerald/rose carry buy/sell semantics.
 ============================================================================ */
 const INK = {
-  amber: "#fbbf24",
+  green: "#10b981",
   cyan: "#22d3ee",
   emerald: "#34d399",
   rose: "#fb7185",
@@ -60,7 +59,7 @@ function Badge({ children, tone = "slate" }) {
     slate: "bg-slate-800 text-slate-300 border-slate-700",
     emerald: "bg-emerald-950 text-emerald-400 border-emerald-800",
     rose: "bg-rose-950 text-rose-400 border-rose-800",
-    amber: "bg-amber-950 text-amber-400 border-amber-800",
+    green: "bg-emerald-950 text-emerald-400 border-emerald-800",
     cyan: "bg-cyan-950 text-cyan-400 border-cyan-800",
   };
   return (
@@ -94,13 +93,13 @@ function ProbabilityRing({ value, size = 84 }) {
       <svg width={size} height={size} className="-rotate-90">
         <circle cx={size / 2} cy={size / 2} r={r} stroke="#1e293b" strokeWidth="7" fill="none" />
         <circle
-          cx={size / 2} cy={size / 2} r={r} stroke={INK.amber} strokeWidth="7" fill="none"
+          cx={size / 2} cy={size / 2} r={r} stroke={INK.green} strokeWidth="7" fill="none"
           strokeDasharray={c} strokeDashoffset={c * (1 - pctVal)} strokeLinecap="round"
           style={{ transition: "stroke-dashoffset 0.6s ease" }}
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-lg font-mono font-bold text-amber-400">{(pctVal * 100).toFixed(0)}%</span>
+        <span className="text-lg font-mono font-bold text-emerald-400">{(pctVal * 100).toFixed(0)}%</span>
         <span className="text-[9px] text-slate-500 uppercase tracking-wide">Prob.</span>
       </div>
     </div>
@@ -143,7 +142,7 @@ function TopNav({ query, setQuery, stocks, onSelectSymbol, indices }) {
   return (
     <header className="h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur flex items-center shrink-0 sticky top-0 z-30">
       <div className="w-56 h-full flex items-center gap-2 px-4 border-r border-slate-800 shrink-0">
-        <div className="w-6 h-6 rounded bg-amber-400 flex items-center justify-center">
+        <div className="w-6 h-6 rounded bg-emerald-400 flex items-center justify-center">
           <Zap size={14} className="text-slate-950" strokeWidth={2.5} />
         </div>
         <span className="font-semibold text-slate-100 text-sm tracking-tight">QUANTIS</span>
@@ -158,7 +157,7 @@ function TopNav({ query, setQuery, stocks, onSelectSymbol, indices }) {
           onFocus={() => setShowResults(true)}
           onBlur={() => setTimeout(() => setShowResults(false), 150)}
           placeholder="Search symbol or company…"
-          className="w-full bg-slate-900 border border-slate-800 rounded-md pl-8 pr-10 py-1.5 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-amber-500/50"
+          className="w-full bg-slate-900 border border-slate-800 rounded-md pl-8 pr-10 py-1.5 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-emerald-500/50"
         />
         <kbd className="absolute right-6 text-[9px] text-slate-500 border border-slate-700 rounded px-1 py-0.5">/</kbd>
         {showResults && results.length > 0 && (
@@ -188,7 +187,7 @@ function TopNav({ query, setQuery, stocks, onSelectSymbol, indices }) {
         </div>
         <button className="text-slate-400 hover:text-slate-200 relative">
           <Bell size={16} />
-          <span className="absolute -top-1 -right-1 w-1.5 h-1.5 rounded-full bg-amber-400" />
+          <span className="absolute -top-1 -right-1 w-1.5 h-1.5 rounded-full bg-emerald-400" />
         </button>
         <div className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] text-slate-300 font-semibold">
           QA
@@ -219,7 +218,7 @@ function Sidebar({ page, setPage }) {
               key={item.id}
               onClick={() => setPage(item.id)}
               className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-xs font-medium transition-colors
-                ${active ? "bg-amber-400/10 text-amber-400 border border-amber-500/20" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200 border border-transparent"}`}
+                ${active ? "bg-emerald-400/10 text-emerald-400 border border-emerald-500/20" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200 border border-transparent"}`}
             >
               <Icon size={15} />
               {item.label}
@@ -269,9 +268,9 @@ function TopSignalsTable({ data, onOpen }) {
               <td className="text-right font-mono text-emerald-400">{fmtINR(row.target_price)}</td>
               <td className="text-right font-mono text-rose-400">{fmtINR(row.stop_loss)}</td>
               <td className="text-right text-slate-400 uppercase">{row.horizon}</td>
-              <td className="text-right font-mono text-amber-400">{Math.round((row.confidence <= 1 ? row.confidence * 100 : row.confidence))}%</td>
+              <td className="text-right font-mono text-emerald-400">{Math.round((row.confidence <= 1 ? row.confidence * 100 : row.confidence))}%</td>
               <td className="text-right">
-                <Badge tone={row.result === 'correct' ? 'emerald' : row.result === 'wrong' ? 'rose' : 'amber'}>
+                <Badge tone={row.result === 'correct' ? 'emerald' : row.result === 'wrong' ? 'rose' : 'green'}>
                   {row.result ? row.result.toUpperCase() : 'PENDING'}
                 </Badge>
               </td>
@@ -294,7 +293,7 @@ function RankedStocksList({ data, onOpen }) {
       {data.slice(0, 10).map((row, i) => (
         <button key={row.symbol} onClick={() => onOpen(row.symbol)} className="flex items-center gap-2 group text-left">
           <span className="text-[10px] text-slate-600 w-4 font-mono">{i + 1}</span>
-          <span className="text-xs font-mono text-slate-200 w-24 group-hover:text-amber-400 shrink-0">{row.symbol}</span>
+          <span className="text-xs font-mono text-slate-200 w-24 group-hover:text-emerald-400 shrink-0">{row.symbol}</span>
           <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
             <div className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full" style={{ width: `${Math.min(100, Math.max(0, (row.change_pct + 10) * 5))}%` }} />
           </div>
@@ -319,7 +318,7 @@ function ProbabilityDistribution({ data }) {
         <YAxis tick={{ fontSize: 9, fill: INK.axis }} axisLine={false} tickLine={false} allowDecimals={false} />
         <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 11, borderRadius: 6 }} labelStyle={{ color: "#e2e8f0" }} />
         <Bar dataKey="count" radius={[3, 3, 0, 0]}>
-          {buckets.map((_, i) => <Cell key={i} fill={i > 2 ? INK.amber : "#475569"} />)}
+          {buckets.map((_, i) => <Cell key={i} fill={i > 2 ? INK.green : "#475569"} />)}
         </Bar>
       </BarChart>
     </ResponsiveContainer>
@@ -433,7 +432,7 @@ function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, onO
           {health.map((h) => (
             <div key={h.name} className="flex items-center justify-between">
               <span className="text-slate-400 font-medium">{h.name}</span>
-              <Badge tone={h.status === 'healthy' ? 'emerald' : h.status === 'degraded' ? 'amber' : 'rose'}>
+              <Badge tone={h.status === 'healthy' ? 'emerald' : h.status === 'degraded' ? 'green' : 'rose'}>
                 {h.value}
               </Badge>
             </div>
@@ -478,11 +477,11 @@ function LiveSignals({ predictions, onOpen }) {
         <div className="flex items-center gap-2 flex-1 max-w-xs">
           <SlidersHorizontal size={12} className="text-slate-500" />
           <span className="text-[10px] text-slate-500 whitespace-nowrap">Min Prob. {(minProb * 100).toFixed(0)}%</span>
-          <input type="range" min="0.5" max="0.95" step="0.01" value={minProb} onChange={(e) => setMinProb(parseFloat(e.target.value))} className="w-full accent-amber-400" />
+          <input type="range" min="0.5" max="0.95" step="0.01" value={minProb} onChange={(e) => setMinProb(parseFloat(e.target.value))} className="w-full accent-emerald-400" />
         </div>
         <div className="ml-auto flex items-center gap-1">
           {["time", "prob"].map((k) => (
-            <button key={k} onClick={() => setSortKey(k)} className={`text-[10px] px-2 py-1 rounded uppercase font-medium ${sortKey === k ? "bg-amber-400/10 text-amber-400 border border-amber-500/30" : "text-slate-500 hover:text-slate-300"}`}>
+            <button key={k} onClick={() => setSortKey(k)} className={`text-[10px] px-2 py-1 rounded uppercase font-medium ${sortKey === k ? "bg-emerald-400/10 text-emerald-400 border border-emerald-500/30" : "text-slate-500 hover:text-slate-300"}`}>
               {k}
             </button>
           ))}
@@ -519,7 +518,7 @@ function LiveSignals({ predictions, onOpen }) {
                   <td className="py-2 text-right font-mono text-slate-300">{fmtINR(row.entry_price)}</td>
                   <td className="py-2 text-right font-mono text-rose-400">{fmtINR(row.stop_loss)}</td>
                   <td className="py-2 text-right font-mono text-emerald-400">{fmtINR(row.target_price)}</td>
-                  <td className="py-2 text-right font-mono text-amber-400">{Math.round(row.confidence <= 1 ? row.confidence * 100 : row.confidence)}%</td>
+                  <td className="py-2 text-right font-mono text-emerald-400">{Math.round(row.confidence <= 1 ? row.confidence * 100 : row.confidence)}%</td>
                   <td className="py-2 text-right font-mono text-slate-400">
                     <Badge tone={row.result === 'correct' ? 'emerald' : row.result === 'wrong' ? 'rose' : 'slate'}>
                       {row.result ? row.result.toUpperCase() : 'PENDING'}
@@ -592,7 +591,7 @@ function CandlestickChart({ series, prediction, overlays, timeframe }) {
 
       {emaFast && <path d={linePath(emaFast)} stroke={INK.cyan} strokeWidth="1.5" fill="none" />}
       {emaSlow && <path d={linePath(emaSlow)} stroke={INK.violet} strokeWidth="1.5" fill="none" />}
-      {vwap && <path d={linePath(vwap)} stroke={INK.amber} strokeWidth="1.2" fill="none" strokeDasharray="4,2" />}
+      {vwap && <path d={linePath(vwap)} stroke={INK.green} strokeWidth="1.2" fill="none" strokeDasharray="4,2" />}
 
       {prediction && [
         { v: prediction.entry_price, color: "#e2e8f0", label: "ENTRY" },
@@ -648,7 +647,7 @@ function OscillatorChart({ series, timeframe, mode }) {
         <rect key={i} x={x(i) - 1.5} y={Math.min(y(v), h / 2)} width={3} height={Math.abs(y(v) - h / 2)} fill={v >= 0 ? INK.emerald : INK.rose} opacity="0.6" />
       ))}
       <path d={macdLine.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${yLine(v)}`).join(" ")} stroke={INK.cyan} strokeWidth="1.2" fill="none" />
-      <path d={sigLine.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${yLine(v)}`).join(" ")} stroke={INK.amber} strokeWidth="1.2" fill="none" />
+      <path d={sigLine.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${yLine(v)}`).join(" ")} stroke={INK.green} strokeWidth="1.2" fill="none" />
       <text x={4} y={10} fontSize="9" fill="#64748b" fontFamily="monospace">MACD(12,26,9)</text>
     </svg>
   );
@@ -873,7 +872,7 @@ function HistoryTab({ predictions, symbol }) {
               <td className="py-2 text-right font-mono text-slate-400">{fmtINR(row.entry_price)}</td>
               <td className="py-2 text-right font-mono text-emerald-400">{fmtINR(row.target_price)}</td>
               <td className="py-2 text-right font-mono text-rose-400">{fmtINR(row.stop_loss)}</td>
-              <td className="py-2 text-right font-mono text-amber-400">{Math.round(row.confidence <= 1 ? row.confidence * 100 : row.confidence)}%</td>
+              <td className="py-2 text-right font-mono text-emerald-400">{Math.round(row.confidence <= 1 ? row.confidence * 100 : row.confidence)}%</td>
               <td className="py-2 text-right font-mono text-slate-400">{row.horizon}</td>
               <td className="py-2 text-right">
                 <Badge tone={row.result === "correct" ? "emerald" : "rose"}>
@@ -949,7 +948,7 @@ function StockDetail({ symbol, watchlist, toggleWatchlist, predictions }) {
     <div className="flex flex-col gap-4 animate-fade-in">
       <div className="flex items-center gap-4">
         <button onClick={() => toggleWatchlist(symbol)}>
-          <Star size={18} className={watchlist.has(symbol) ? "fill-amber-400 text-amber-400" : "text-slate-600"} />
+          <Star size={18} className={watchlist.has(symbol) ? "fill-emerald-400 text-emerald-400" : "text-slate-600"} />
         </button>
         <div>
           <div className="flex items-center gap-2">
@@ -965,7 +964,7 @@ function StockDetail({ symbol, watchlist, toggleWatchlist, predictions }) {
         )}
         <div className="ml-auto flex items-center gap-1">
           {["3M", "6M", "1Y"].map((tf) => (
-            <button key={tf} onClick={() => setTimeframe(tf)} className={`text-[10px] px-2.5 py-1 rounded font-medium ${timeframe === tf ? "bg-amber-400/10 text-amber-400 border border-amber-500/30" : "text-slate-500 hover:text-slate-300 border border-transparent"}`}>
+            <button key={tf} onClick={() => setTimeframe(tf)} className={`text-[10px] px-2.5 py-1 rounded font-medium ${timeframe === tf ? "bg-emerald-400/10 text-emerald-400 border border-emerald-500/30" : "text-slate-500 hover:text-slate-300 border border-transparent"}`}>
               {tf}
             </button>
           ))}
@@ -979,7 +978,7 @@ function StockDetail({ symbol, watchlist, toggleWatchlist, predictions }) {
               {[
                 { key: "ema20", label: "EMA 20", color: "text-cyan-400" },
                 { key: "ema50", label: "EMA 50", color: "text-violet-400" },
-                { key: "vwap", label: "VWAP", color: "text-amber-400" },
+                { key: "vwap", label: "VWAP", color: "text-emerald-400" },
               ].map((ov) => (
                 <button
                   key={ov.key} onClick={() => toggleOverlay(ov.key)}
@@ -1012,7 +1011,7 @@ function StockDetail({ symbol, watchlist, toggleWatchlist, predictions }) {
               ].map((t) => (
                 <button
                   key={t.id} onClick={() => setTab(t.id)}
-                  className={`px-3 py-2.5 text-xs font-medium border-b-2 -mb-px ${tab === t.id ? "border-amber-400 text-amber-400" : "border-transparent text-slate-500 hover:text-slate-300"}`}
+                  className={`px-3 py-2.5 text-xs font-medium border-b-2 -mb-px ${tab === t.id ? "border-emerald-400 text-emerald-400" : "border-transparent text-slate-500 hover:text-slate-300"}`}
                 >
                   {t.label}
                 </button>

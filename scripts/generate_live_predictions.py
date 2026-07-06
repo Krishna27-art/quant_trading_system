@@ -293,6 +293,61 @@ def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[
     return ("BUY" if score >= 0 else "SELL"), {k: round(v, 4) for k, v in votes.items()}
 
 
+def generate_explanation(features: pd.Series, direction: str, timeframe: str) -> str:
+    """Generate a clean, explainable list of reasons for the prediction."""
+    reasons = []
+    tf = timeframe.upper()
+    if tf == "INTRADAY":
+        rsi = float(features.get("rsi_14m", 50.0))
+        momentum = float(features.get("momentum_5m", 0.0))
+        vwap_dist = float(features.get("vwap_dist", 0.0))
+        
+        if direction == "BUY":
+            if momentum > 0: reasons.append("Positive momentum shift")
+            if vwap_dist > 0: reasons.append("Trading above daily VWAP")
+            if rsi < 40: reasons.append("RSI recovery from oversold zone")
+            elif rsi < 60: reasons.append("Neutral RSI support")
+        else:
+            if momentum < 0: reasons.append("Negative momentum breakdown")
+            if vwap_dist < 0: reasons.append("Trading below daily VWAP")
+            if rsi > 60: reasons.append("RSI pullback from overbought zone")
+            elif rsi > 40: reasons.append("Neutral RSI resistance")
+            
+    elif tf == "SWING":
+        rsi = float(features.get("rsi_14d", 50.0))
+        ma20_slope = float(features.get("ma20_slope", 0.0))
+        z_score = float(features.get("z_score_20d", 0.0))
+        
+        if direction == "BUY":
+            if ma20_slope > 0: reasons.append("Moving averages pointing upwards")
+            if z_score < -1.0: reasons.append("Mean reversion: oversold z-score")
+            if rsi < 40: reasons.append("Daily RSI recovery")
+        else:
+            if ma20_slope < 0: reasons.append("Moving averages pointing downwards")
+            if z_score > 1.0: reasons.append("Mean reversion: overbought z-score")
+            if rsi > 60: reasons.append("Daily RSI pullback")
+            
+    else:
+        rsi = float(features.get("rsi_14w", 50.0))
+        ma50_slope = float(features.get("ma50_slope", 0.0))
+        price_to_high = float(features.get("price_to_52w_high", 1.0))
+        
+        if direction == "BUY":
+            if ma50_slope > 0: reasons.append("Long-term moving average trend is bullish")
+            if price_to_high > 0.9: reasons.append("Consolidating near 52-week highs")
+            if rsi < 45: reasons.append("Weekly RSI base formation")
+        else:
+            if ma50_slope < 0: reasons.append("Long-term moving average trend is bearish")
+            if price_to_high < 0.8: reasons.append("Trading far below 52-week highs")
+            if rsi > 65: reasons.append("Weekly RSI exhaustion")
+            
+    if not reasons:
+        reasons.append(f"Model signal based on {direction.lower()} alignment")
+        
+    return " | ".join(reasons)
+
+
+
 
 
 
@@ -503,6 +558,8 @@ def generate_predictions_for_timeframe(
             for feat_name in available_features:
                 feat_summary[feat_name] = round(float(features[feat_name]), 4)
 
+            explanation = generate_explanation(features, direction, timeframe)
+
             predictions.append({
                 "symbol": sym,
                 "timeframe": timeframe,
@@ -514,6 +571,7 @@ def generate_predictions_for_timeframe(
                 "model_version": model_version,
                 "feature_version": FEATURE_SCHEMA_VERSION,
                 "features_json": json.dumps(feat_summary),
+                "reason": explanation,
             })
 
             logger.info(
@@ -630,6 +688,7 @@ def run():
                 model_version=sig["model_version"],
                 feature_version=sig["feature_version"],
                 features_used=sig["features_json"],
+                reason=sig["reason"],
                 actual_outcome="OPEN",
                 prediction_time=now,
                 expiry_time=_expiry_time(sig["timeframe"], now),

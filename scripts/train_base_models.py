@@ -127,15 +127,16 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: insufficient weekly data — skipping")
             continue
 
-        fundamentals = _get_fundamentals(sym)
         macro_df = extract_historical_macro(pd.DatetimeIndex(df["timestamp"]))
-        extra_data = {**fundamentals, **{col: macro_df[col] for col in macro_df.columns}}
+        extra_data = {col: macro_df[col] for col in macro_df.columns}
         feats = build_features(df, "LONGTERM", extra=extra_data)
         label = build_label(df, "LONGTERM")
 
         # Align and drop NaN rows
         combined = feats[LONGTERM_FEATURES].copy()
         combined["__label__"] = label.values
+        combined["__symbol__"] = sym
+        combined["__date__"] = combined.index
         combined = combined.dropna()
 
         if len(combined) < 20:
@@ -148,8 +149,7 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: label validation failed — skipping")
             continue
 
-        all_X.append(combined[LONGTERM_FEATURES])
-        all_y.append(combined["__label__"].astype(int))
+        all_X.append(combined)
         logger.info(f"  {sym}: {len(combined)} training rows, "
                     f"win_rate={combined['__label__'].mean():.2%}")
 
@@ -157,8 +157,12 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
         logger.error("No training data collected for LONGTERM — aborting")
         return
 
-    X = pd.concat(all_X, ignore_index=True)
-    y = pd.concat(all_y, ignore_index=True)
+    combined_all = pd.concat(all_X, ignore_index=True)
+    combined_all = combined_all.sort_values("__date__").reset_index(drop=True)
+    combined_all = combined_all.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
+
+    X = combined_all[LONGTERM_FEATURES]
+    y = combined_all["__label__"].astype(int)
     logger.info(f"Total LONGTERM training rows: {len(X)}, overall win_rate={y.mean():.2%}")
 
     # Final validation on combined dataset
@@ -200,6 +204,8 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
 
         combined = feats[SWING_FEATURES].copy()
         combined["__label__"] = label.values
+        combined["__symbol__"] = sym
+        combined["__date__"] = combined.index
         combined = combined.dropna()
 
         if len(combined) < 30:
@@ -211,16 +217,19 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: label validation failed — skipping")
             continue
 
-        all_X.append(combined[SWING_FEATURES])
-        all_y.append(combined["__label__"].astype(int))
+        all_X.append(combined)
         logger.info(f"  {sym}: {len(combined)} rows, win_rate={combined['__label__'].mean():.2%}")
 
     if not all_X:
         logger.error("No training data collected for SWING — aborting")
         return
 
-    X = pd.concat(all_X, ignore_index=True)
-    y = pd.concat(all_y, ignore_index=True)
+    combined_all = pd.concat(all_X, ignore_index=True)
+    combined_all = combined_all.sort_values("__date__").reset_index(drop=True)
+    combined_all = combined_all.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
+
+    X = combined_all[SWING_FEATURES]
+    y = combined_all["__label__"].astype(int)
     logger.info(f"Total SWING training rows: {len(X)}, overall win_rate={y.mean():.2%}")
 
     # Final validation on combined dataset
@@ -248,7 +257,7 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
     all_y: list[pd.Series]    = []
 
     for sym in symbols:
-        logger.info(f"  Fetching 60m data for {sym} (proxy for intraday)...")
+        logger.info(f"  Fetching 1m data for {sym}...")
         df = _load_intraday(sym)
         if df.empty or len(df) < 50:
             logger.warning(f"  {sym}: insufficient intraday data — skipping")
@@ -261,6 +270,8 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
 
         combined = feats[INTRADAY_FEATURES].copy()
         combined["__label__"] = label.values
+        combined["__symbol__"] = sym
+        combined["__date__"] = combined.index
         combined = combined.dropna()
 
         if len(combined) < 30:
@@ -272,16 +283,19 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
             logger.warning(f"  {sym}: label validation failed — skipping")
             continue
 
-        all_X.append(combined[INTRADAY_FEATURES])
-        all_y.append(combined["__label__"].astype(int))
+        all_X.append(combined)
         logger.info(f"  {sym}: {len(combined)} rows, win_rate={combined['__label__'].mean():.2%}")
 
     if not all_X:
         logger.error("No training data collected for INTRADAY — aborting")
         return
 
-    X = pd.concat(all_X, ignore_index=True)
-    y = pd.concat(all_y, ignore_index=True)
+    combined_all = pd.concat(all_X, ignore_index=True)
+    combined_all = combined_all.sort_values("__date__").reset_index(drop=True)
+    combined_all = combined_all.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
+
+    X = combined_all[INTRADAY_FEATURES]
+    y = combined_all["__label__"].astype(int)
     logger.info(f"Total INTRADAY training rows: {len(X)}, overall win_rate={y.mean():.2%}")
 
     # Final validation on combined dataset

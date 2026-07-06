@@ -102,7 +102,7 @@ def extract_historical_macro(timestamps: pd.DatetimeIndex) -> pd.DataFrame:
                 close = vix_df
             if isinstance(close, pd.DataFrame):
                 close = close[close.columns[0]]
-            vix_series = close.reindex(timestamps, method="ffill").bfill()
+            vix_series = close.reindex(timestamps, method="ffill")
             out["vix"] = vix_series.fillna(15.0)
         else:
             out["vix"] = 15.0

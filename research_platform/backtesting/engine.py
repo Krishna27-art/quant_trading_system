@@ -181,6 +181,13 @@ class BacktestResult(BaseModel):
     deflated_sharpe: float | None = Field(None, description="Deflated Sharpe ratio")
     sortino_ratio: float = Field(..., description="Sortino ratio")
     max_drawdown: float = Field(..., description="Maximum drawdown")
+    cagr: float | None = Field(None, description="Compound annual growth rate")
+    volatility: float | None = Field(None, description="Annualized volatility")
+    calmar_ratio: float | None = Field(None, description="Calmar ratio")
+    avg_drawdown: float | None = Field(None, description="Average drawdown")
+    max_drawdown_duration: int | None = Field(None, description="Maximum drawdown duration in days")
+    worst_trade: float | None = Field(None, description="Worst trade P&L percentage")
+    longest_losing_streak: int | None = Field(None, description="Longest consecutive losing trades streak")
 
     # Trade statistics
     total_trades: int = Field(..., description="Total number of trades")
@@ -646,6 +653,44 @@ class BacktestingEngine:
         avg_positions = np.mean([len(p.positions) for p in self._portfolio_history])
         turnover = self._calculate_turnover(periods_per_year)
 
+        # Calculate worst trade PnL%
+        pnls = [p.pnl_pct for p in self._all_positions]
+        worst_trade = min(pnls) if pnls else 0.0
+
+        # Calculate longest losing streak
+        longest_losing_streak = 0
+        current_streak = 0
+        for p in self._all_positions:
+            if p.pnl < 0:
+                current_streak += 1
+                if current_streak > longest_losing_streak:
+                    longest_losing_streak = current_streak
+            else:
+                current_streak = 0
+
+        # Calculate institutional performance metrics
+        cagr = None
+        volatility = None
+        calmar_ratio = None
+        avg_drawdown = None
+        max_drawdown_duration = None
+
+        try:
+            from research_platform.backtesting.performance_metrics import PerformanceCalculator
+            perf_calc = PerformanceCalculator()
+            perf_metrics = perf_calc.calculate_metrics(
+                returns=returns_clean,
+                equity_curve=equity_curve,
+                positions=self._all_positions,
+            )
+            cagr = perf_metrics.cagr
+            volatility = perf_metrics.volatility
+            calmar_ratio = perf_metrics.calmar_ratio
+            avg_drawdown = perf_metrics.avg_drawdown
+            max_drawdown_duration = perf_metrics.max_drawdown_duration
+        except Exception as ex:
+            self.logger.warning(f"Failed to calculate advanced performance metrics: {ex}")
+
         result = BacktestResult(
             config=self.config,
             total_return=total_return,
@@ -654,6 +699,13 @@ class BacktestingEngine:
             deflated_sharpe=deflated_sharpe,
             sortino_ratio=sortino_ratio,
             max_drawdown=max_drawdown,
+            cagr=cagr,
+            volatility=volatility,
+            calmar_ratio=calmar_ratio,
+            avg_drawdown=avg_drawdown,
+            max_drawdown_duration=max_drawdown_duration,
+            worst_trade=worst_trade,
+            longest_losing_streak=longest_losing_streak,
             total_trades=total_trades,
             win_rate=win_rate,
             avg_win=avg_win,

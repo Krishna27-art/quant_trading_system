@@ -232,9 +232,14 @@ def _latest_signal_map() -> dict[str, str]:
     signals: dict[str, str] = {}
     for row in rows:
         symbol = str(row.get("symbol") or "").upper()
-        prediction = str(row.get("prediction") or "").upper()
-        if symbol and symbol not in signals and prediction in {"BUY", "SELL", "HOLD"}:
-            signals[symbol] = prediction
+        pred = str(row.get("prediction") or "").upper()
+        if symbol and symbol not in signals:
+            if pred in {"BUY", "LONG"}:
+                signals[symbol] = "BUY"
+            elif pred in {"SELL", "SHORT"}:
+                signals[symbol] = "SELL"
+            elif pred == "HOLD":
+                signals[symbol] = "HOLD"
     return signals
 
 

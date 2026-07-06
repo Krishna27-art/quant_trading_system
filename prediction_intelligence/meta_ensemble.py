@@ -135,18 +135,34 @@ class MetaEnsemble:
             tscv = TimeSeriesSplit(n_splits=5)
             oof_preds = np.zeros((n_samples, 3))  # 3 columns for LGBM, XGB, LR probabilities
             
-            for train_idx, val_idx in tscv.split(X):
-                if len(train_idx) > v_barrier:
-                    train_idx_purged = train_idx[:-v_barrier]
-                else:
-                    train_idx_purged = train_idx
+            dates = pd.to_datetime(X["__date__"]) if "__date__" in X.columns else None
+            cols_to_keep = self.feature_cols + (["__date__"] if "__date__" in X.columns else [])
+            X_clean = X[cols_to_keep].copy()
 
-                X_train_fold, X_val_fold = X.iloc[train_idx_purged], X.iloc[val_idx]
+            for train_idx, val_idx in tscv.split(X_clean):
+                if dates is not None and len(val_idx) > 0:
+                    val_start_date = dates.iloc[val_idx[0]]
+                    if self.timeframe == "INTRADAY":
+                        delta = pd.Timedelta(minutes=v_barrier)
+                    elif self.timeframe == "SWING":
+                        delta = pd.Timedelta(days=v_barrier)
+                    else:
+                        delta = pd.Timedelta(weeks=v_barrier)
+                    cutoff_date = val_start_date - delta
+                    train_idx_purged = [i for i in train_idx if dates.iloc[i] < cutoff_date]
+                else:
+                    if len(train_idx) > v_barrier:
+                        train_idx_purged = train_idx[:-v_barrier]
+                    else:
+                        train_idx_purged = train_idx
+
+                X_train_fold, X_val_fold = X_clean.iloc[train_idx_purged], X_clean.iloc[val_idx]
                 y_train_fold, y_val_fold = y.iloc[train_idx_purged], y.iloc[val_idx]
 
-                # Base models fitted on fold (using simple train/val logic or full fold fit)
-                # Since early stopping splits are tricky on CV folds, we train simplified models on the fold
-                # or just use fit without early stopping callbacks for this cross-validation.
+                X_train_fold_clean = X_train_fold[self.feature_cols]
+                X_val_fold_clean = X_val_fold[self.feature_cols]
+
+                # Base models fitted on fold (using simplified fold fit)
                 fold_lgbm = BaseLightGBM(timeframe=self.timeframe, model_dir=self.model_dir)
                 fold_lgbm.feature_names = self.feature_cols
                 fold_xgb = BaseXGBoost(timeframe=self.timeframe, model_dir=self.model_dir)
@@ -165,28 +181,28 @@ class MetaEnsemble:
                 lparams = dict(lgb_p_d[self.timeframe])
                 lparams["scale_pos_weight"] = round(spw, 3)
                 fold_lgbm.model = lgb.LGBMClassifier(**lparams)
-                fold_lgbm.model.fit(X_train_fold[self.feature_cols].values.astype(np.float32), y_train_fold.values.astype(np.int32))
+                fold_lgbm.model.fit(X_train_fold_clean.values.astype(np.float32), y_train_fold.values.astype(np.int32))
 
                 xparams = dict(xgb_p_d[self.timeframe])
                 xparams["scale_pos_weight"] = round(float(spw), 3)
                 fold_xgb.model = xgb.XGBClassifier(**xparams)
-                fold_xgb.model.fit(X_train_fold[self.feature_cols].values.astype(np.float32), y_train_fold.values.astype(np.int32))
+                fold_xgb.model.fit(X_train_fold_clean.values.astype(np.float32), y_train_fold.values.astype(np.int32))
 
                 fold_logistic.train(X_train_fold, y_train_fold, self.feature_cols)
 
                 # Predict on val fold
                 if fold_lgbm.model is not None:
-                    oof_preds[val_idx, 0] = fold_lgbm.predict_proba(X_val_fold)[:, 1]
+                    oof_preds[val_idx, 0] = fold_lgbm.predict_proba(X_val_fold_clean)[:, 1]
                 else:
                     oof_preds[val_idx, 0] = 0.5
                 
                 if fold_xgb.model is not None:
-                    oof_preds[val_idx, 1] = fold_xgb.predict_proba(X_val_fold)[:, 1]
+                    oof_preds[val_idx, 1] = fold_xgb.predict_proba(X_val_fold_clean)[:, 1]
                 else:
                     oof_preds[val_idx, 1] = 0.5
                 
                 if fold_logistic.is_ready():
-                    oof_preds[val_idx, 2] = fold_logistic.predict_proba(X_val_fold)
+                    oof_preds[val_idx, 2] = fold_logistic.predict_proba(X_val_fold_clean)
                 else:
                     oof_preds[val_idx, 2] = 0.5
 

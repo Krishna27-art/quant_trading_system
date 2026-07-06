@@ -291,14 +291,28 @@ async def daily_snapshot_pruning_job():
         logger.error(f"Error executing daily snapshot pruning: {e}")
 
 
+async def outcome_resolution_job():
+    logger.info("Running Daily Outcome Resolution and Calibration Job...")
+    try:
+        from scripts.resolve_outcomes import resolve_unresolved_predictions
+        # Run synchronous function in background thread executor to prevent blocking the event loop
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, resolve_unresolved_predictions)
+        logger.info("Daily Outcome Resolution and Calibration Job completed successfully.")
+    except Exception as e:
+        logger.error(f"Error executing outcome resolution and calibration job: {e}")
+
+
 async def cron_event_loop():
     # Pre-market job at 6:00 AM
     pre_market_task = asyncio.create_task(self_correcting_timer(6, 0, pre_market_intelligence_job))
     # Post-market job at 4:00 PM
     post_market_task = asyncio.create_task(self_correcting_timer(16, 0, post_trade_analysis_job))
+    # Daily outcome resolution and calibration at 5:30 PM (17:30 IST)
+    resolution_task = asyncio.create_task(self_correcting_timer(17, 30, outcome_resolution_job))
     # Daily snapshot pruning job at 11:00 PM
     pruning_task = asyncio.create_task(self_correcting_timer(23, 0, daily_snapshot_pruning_job))
-    await asyncio.gather(pre_market_task, post_market_task, pruning_task)
+    await asyncio.gather(pre_market_task, post_market_task, resolution_task, pruning_task)
 
 
 # --- Master Orchestrator ---

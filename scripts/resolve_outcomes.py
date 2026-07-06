@@ -161,10 +161,18 @@ def _resolve_single(pred: Prediction) -> bool:
     exit_price: float | None = None
     exit_time: datetime | None = None
 
+    max_high = entry
+    min_low  = entry
+    bars_traversed = []
+
     for _, row in df.iterrows():
         bar_high = float(row["high"])
         bar_low  = float(row["low"])
         t_val    = row["timestamp"]
+
+        bars_traversed.append(row)
+        max_high = max(max_high, bar_high)
+        min_low  = min(min_low, bar_low)
 
         if direction == "BUY":
             # SL breach: low touched below stop
@@ -216,16 +224,24 @@ def _resolve_single(pred: Prediction) -> bool:
                 outcome    = "TIMEOUT"
                 exit_price = float(df["close"].iloc[expiry_bars - 1])
                 exit_time  = df["timestamp"].iloc[expiry_bars - 1]
+                # Slice traversed bars to match expiry horizon
+                bars_traversed = bars_traversed[:expiry_bars]
+                max_high = max([float(r["high"]) for r in bars_traversed] + [entry])
+                min_low  = min([float(r["low"]) for r in bars_traversed] + [entry])
 
     if outcome == "OPEN":
         # Not yet expired; leave for next run
         return False
 
-    # ── compute actual return ───────────────────────────────────────────────
+    # ── compute actual return, MFE, and MAE ─────────────────────────────────
     if direction == "BUY":
         actual_ret = (exit_price - entry) / entry
+        mfe_val = (max_high - entry) / entry
+        mae_val = (entry - min_low) / entry
     else:
         actual_ret = (entry - exit_price) / entry
+        mfe_val = (entry - min_low) / entry
+        mae_val = (max_high - entry) / entry
 
     # ── write back to model ─────────────────────────────────────────────────
     # Use only columns that exist in database/models.py
@@ -234,10 +250,13 @@ def _resolve_single(pred: Prediction) -> bool:
     pred.target_hit     = outcome == "WIN"
     pred.stop_hit       = outcome == "LOSS"
     pred.is_correct     = outcome == "WIN"
+    pred.mfe            = round(mfe_val, 6)
+    pred.mae            = round(mae_val, 6)
 
     logger.info(
         f"Resolved {sym} | {timeframe} | {direction} | {outcome} | "
-        f"entry={entry:.2f} exit={exit_price:.2f} ret={actual_ret * 100:.2f}%"
+        f"entry={entry:.2f} exit={exit_price:.2f} ret={actual_ret * 100:.2f}% | "
+        f"MFE={mfe_val * 100:.2f}% MAE={mae_val * 100:.2f}%"
     )
     return True
 
@@ -277,29 +296,31 @@ def _update_calibrators(db: Session) -> None:
     """
     Refit probability calibrators using all resolved predictions.
     Called after each resolution run. Only triggers once >= CALIBRATION_MIN_SAMPLES
-    resolved predictions exist per timeframe.
+    resolved predictions exist per timeframe and direction (BUY/SELL).
     """
     for tf in ("INTRADAY", "SWING", "LONGTERM"):
-        resolved = (
-            db.query(Prediction)
-            .filter(
-                Prediction.actual_outcome.in_(["WIN", "LOSS"]),
-                Prediction.horizon == tf,
-                Prediction.confidence.isnot(None),
+        for direction in ("BUY", "SELL"):
+            resolved = (
+                db.query(Prediction)
+                .filter(
+                    Prediction.actual_outcome.in_(["WIN", "LOSS"]),
+                    Prediction.horizon == tf,
+                    Prediction.prediction == direction,
+                    Prediction.confidence.isnot(None),
+                )
+                .all()
             )
-            .all()
-        )
-        if len(resolved) < CALIBRATION_MIN_SAMPLES:
-            logger.debug(
-                f"Calibration skipped for {tf}: only {len(resolved)} resolved "
-                f"predictions (need {CALIBRATION_MIN_SAMPLES})"
-            )
-            continue
+            if len(resolved) < CALIBRATION_MIN_SAMPLES:
+                logger.debug(
+                    f"Calibration skipped for {tf} ({direction}): only {len(resolved)} resolved "
+                    f"predictions (need {CALIBRATION_MIN_SAMPLES})"
+                )
+                continue
 
-        raw_probs = [float(p.confidence) for p in resolved]
-        outcomes  = [1 if p.actual_outcome == "WIN" else 0 for p in resolved]
-        fit_calibrator(raw_probs, outcomes, timeframe=tf)
-        logger.info(f"Calibrator updated for {tf} using {len(resolved)} resolved predictions")
+            raw_probs = [float(p.confidence) for p in resolved]
+            outcomes  = [1 if p.actual_outcome == "WIN" else 0 for p in resolved]
+            fit_calibrator(raw_probs, outcomes, timeframe=tf, direction=direction)
+            logger.info(f"Calibrator updated for {tf} ({direction}) using {len(resolved)} resolved predictions")
 
 
 def resolve_unresolved_predictions() -> None:

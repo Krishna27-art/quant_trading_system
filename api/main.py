@@ -598,43 +598,47 @@ def recalibrate():
         # Fetch historical predictions with outcomes
         result = db.execute(
             text("""
-                SELECT horizon, confidence, actual_outcome
+                SELECT horizon, confidence, actual_outcome, prediction
                 FROM predictions
                 WHERE actual_outcome IN ('WIN', 'LOSS')
                 ORDER BY prediction_time DESC
-                LIMIT 1000
+                LIMIT 2000
             """)
         ).fetchall()
         
         if not result:
             return {"status": "ok", "message": "No historical outcomes found for calibration"}
         
-        # Group by timeframe
-        timeframe_data = {}
+        # Group by (timeframe, direction)
+        calib_data = {}
         for row in result:
-            horizon = row[0]  # INTRADAY, SWING, LONGTERM
+            horizon = row[0]       # INTRADAY, SWING, LONGTERM
             confidence = float(row[1])
             outcome = 1 if row[2] == "WIN" else 0
+            direction = row[3]     # BUY, SELL
             
-            if horizon not in timeframe_data:
-                timeframe_data[horizon] = {"raw_probs": [], "outcomes": []}
-            timeframe_data[horizon]["raw_probs"].append(confidence)
-            timeframe_data[horizon]["outcomes"].append(outcome)
+            key = (horizon, direction)
+            if key not in calib_data:
+                calib_data[key] = {"raw_probs": [], "outcomes": []}
+            calib_data[key]["raw_probs"].append(confidence)
+            calib_data[key]["outcomes"].append(outcome)
         
-        # Fit calibrators for each timeframe
+        # Fit calibrators for each timeframe + direction combination
         fitted_count = 0
-        for timeframe, data in timeframe_data.items():
+        fitted_keys = []
+        for (timeframe, direction), data in calib_data.items():
             if len(data["raw_probs"]) >= 50:
-                fit_calibrator(data["raw_probs"], data["outcomes"], timeframe, method="isotonic")
+                fit_calibrator(data["raw_probs"], data["outcomes"], timeframe, direction=direction, method="isotonic")
                 fitted_count += 1
-                logger.info(f"Recalibrated {timeframe} with {len(data['raw_probs'])} samples")
+                fitted_keys.append(f"{timeframe}_{direction}")
+                logger.info(f"Recalibrated {timeframe} ({direction}) with {len(data['raw_probs'])} samples")
         
         db.close()
         
         return {
             "status": "ok",
-            "message": f"Recalibration completed for {fitted_count} timeframes",
-            "fitted_timeframes": list(timeframe_data.keys())
+            "message": f"Recalibration completed for {fitted_count} direction-specific timeframes",
+            "fitted_timeframes": fitted_keys
         }
         
     except Exception as e:

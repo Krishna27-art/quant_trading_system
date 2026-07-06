@@ -82,6 +82,7 @@ def build_label(
     timeframe: str,
     target_pct: float | None = None,
     sl_pct: float | None = None,
+    side: str = "long",
 ) -> pd.Series:
     """
     Triple-barrier binary label using TripleBarrierLabeler.
@@ -128,23 +129,25 @@ def build_label(
         symbol="TRAIN_DF",
     )
 
+    target_value = 1 if side.lower() == "long" else -1
+
     # Map generated labels back to df index. Default is 0.
     # Map label_value of 1 to 1, and -1 / 0 to 0.
     out = pd.Series(0, index=df.index, dtype=int)
     if isinstance(df.index, pd.DatetimeIndex):
         for lbl in labels_list:
             if lbl.event_time in out.index:
-                out.loc[lbl.event_time] = 1 if lbl.label_value == 1 else 0
+                out.loc[lbl.event_time] = 1 if lbl.label_value == target_value else 0
     elif "timestamp" in df.columns:
         time_to_idx = {pd.to_datetime(t): idx for idx, t in enumerate(df["timestamp"])}
         for lbl in labels_list:
             ts = pd.to_datetime(lbl.event_time)
             if ts in time_to_idx:
-                out.iloc[time_to_idx[ts]] = 1 if lbl.label_value == 1 else 0
+                out.iloc[time_to_idx[ts]] = 1 if lbl.label_value == target_value else 0
     else:
         for i, lbl in enumerate(labels_list):
             if i < len(out):
-                out.iloc[i] = 1 if lbl.label_value == 1 else 0
+                out.iloc[i] = 1 if lbl.label_value == target_value else 0
 
     return out
 
@@ -198,7 +201,8 @@ class BaseLogistic:
             dict with "mean_cv_acc" and "final_train_acc" keys.
         """
         self.feature_names = feature_cols
-        X = X_train[self.feature_names].copy()
+        cols_to_keep = self.feature_names + (["__date__"] if "__date__" in X_train.columns else [])
+        X = X_train[cols_to_keep].copy()
 
         steps: list[tuple] = [
             ("imputer", SimpleImputer(strategy="median")),
@@ -238,13 +242,28 @@ class BaseLogistic:
         # TimeSeriesSplit cross-validation (no peeking at future folds with purging)
         tscv   = TimeSeriesSplit(n_splits=self.n_splits)
         cv_accs: list[float] = []
-        for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X)):
-            if len(train_idx) > v_barrier:
-                train_idx_purged = train_idx[:-v_barrier]
-            else:
-                train_idx_purged = train_idx
 
-            X_tr, X_val = X.iloc[train_idx_purged], X.iloc[val_idx]
+        dates = pd.to_datetime(X["__date__"]) if "__date__" in X.columns else None
+        X_clean = X.drop(columns=["__date__"], errors="ignore")
+
+        for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X_clean)):
+            if dates is not None and len(val_idx) > 0:
+                val_start_date = dates.iloc[val_idx[0]]
+                if set(self.feature_names).issubset(set(INTRADAY_FEATURES)):
+                    delta = pd.Timedelta(minutes=v_barrier)
+                elif set(self.feature_names).issubset(set(SWING_FEATURES)):
+                    delta = pd.Timedelta(days=v_barrier)
+                else:
+                    delta = pd.Timedelta(weeks=v_barrier)
+                cutoff_date = val_start_date - delta
+                train_idx_purged = [i for i in train_idx if dates.iloc[i] < cutoff_date]
+            else:
+                if len(train_idx) > v_barrier:
+                    train_idx_purged = train_idx[:-v_barrier]
+                else:
+                    train_idx_purged = train_idx
+
+            X_tr, X_val = X_clean.iloc[train_idx_purged], X_clean.iloc[val_idx]
             y_tr, y_val = y_train.iloc[train_idx_purged], y_train.iloc[val_idx]
 
             # Check if training fold has at least 2 classes
@@ -279,8 +298,8 @@ class BaseLogistic:
             dummy_steps.append(("classifier", DummyClassifier(strategy="prior")))
             pipeline = Pipeline(dummy_steps)
 
-        pipeline.fit(X, y_train)
-        train_acc = float((pipeline.predict(X) == y_train).mean())
+        pipeline.fit(X_clean, y_train)
+        train_acc = float((pipeline.predict(X_clean) == y_train).mean())
         logger.info(f"Final train accuracy: {train_acc:.4f}")
 
         self.pipeline    = pipeline
@@ -546,7 +565,8 @@ class ModelRegistry:
         if model_version.startswith("META"):
             from prediction_intelligence.meta_ensemble import MetaEnsemble
             model = MetaEnsemble(timeframe=timeframe, model_dir=self._model_dir)
-            dir_p = os.path.join(self._model_dir, f"meta_ensemble_{timeframe.lower()}")
+            suffix = "_long" if "_long" in model_version else "_short" if "_short" in model_version else ""
+            dir_p = os.path.join(self._model_dir, f"meta_ensemble_{timeframe.lower()}{suffix}")
             if os.path.isdir(dir_p):
                 model.load(dir_p)
             else:

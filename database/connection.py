@@ -359,6 +359,7 @@ def create_tables():
             entry_price REAL,
             stop_loss REAL,
             target_price REAL,
+            expected_return REAL,
             prediction_time TIMESTAMPTZ NOT NULL,
             expiry_time TIMESTAMPTZ,
             actual_outcome TEXT,
@@ -529,6 +530,12 @@ def create_tables():
     # Run migration to add feature_version column if it doesn't exist
     try:
         execute_write("ALTER TABLE predictions ADD COLUMN feature_version TEXT")
+    except Exception:
+        pass
+
+    # Run migration to add expected_return column if it doesn't exist
+    try:
+        execute_write("ALTER TABLE predictions ADD COLUMN expected_return REAL")
     except Exception:
         pass
 

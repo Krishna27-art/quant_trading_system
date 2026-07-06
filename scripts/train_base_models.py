@@ -114,11 +114,11 @@ def _get_fundamentals(symbol: str) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 def train_longterm(symbols: list[str], model_dir: str) -> None:
-    logger.info("=== Training LOGREG_LONGTERM_v1 ===")
+    logger.info("=== Training LOGREG_LONGTERM_v1 (Long & Short Models) ===")
 
     validator = LabelValidator()
-    all_X: list[pd.DataFrame] = []
-    all_y: list[pd.Series]    = []
+    all_X_long: list[pd.DataFrame] = []
+    all_X_short: list[pd.DataFrame] = []
 
     for sym in symbols:
         logger.info(f"  Fetching weekly data for {sym}...")
@@ -130,65 +130,84 @@ def train_longterm(symbols: list[str], model_dir: str) -> None:
         macro_df = extract_historical_macro(pd.DatetimeIndex(df["timestamp"]))
         extra_data = {col: macro_df[col] for col in macro_df.columns}
         feats = build_features(df, "LONGTERM", extra=extra_data)
-        label = build_label(df, "LONGTERM")
+        
+        # Build long and short labels
+        label_long = build_label(df, "LONGTERM", side="long")
+        label_short = build_label(df, "LONGTERM", side="short")
 
-        # Align and drop NaN rows
-        combined = feats[LONGTERM_FEATURES].copy()
-        combined["__label__"] = label.values
-        combined["__symbol__"] = sym
-        combined["__date__"] = combined.index
-        combined = combined.dropna()
+        # Align long
+        combined_long = feats[LONGTERM_FEATURES].copy()
+        combined_long["__label__"] = label_long.values
+        combined_long["__symbol__"] = sym
+        combined_long["__date__"] = combined_long.index
+        combined_long = combined_long.dropna()
 
-        if len(combined) < 20:
-            logger.warning(f"  {sym}: too few clean rows ({len(combined)}) — skipping")
-            continue
+        # Align short
+        combined_short = feats[LONGTERM_FEATURES].copy()
+        combined_short["__label__"] = label_short.values
+        combined_short["__symbol__"] = sym
+        combined_short["__date__"] = combined_short.index
+        combined_short = combined_short.dropna()
 
-        # Validate label distribution before including in training set
-        label_stats = validator.validate_label_distribution(combined["__label__"], min_samples=20)
-        if not label_stats["valid"]:
-            logger.warning(f"  {sym}: label validation failed — skipping")
-            continue
+        # Validate and append long
+        if len(combined_long) >= 20:
+            label_stats = validator.validate_label_distribution(combined_long["__label__"], min_samples=20)
+            if label_stats["valid"]:
+                all_X_long.append(combined_long)
 
-        all_X.append(combined)
-        logger.info(f"  {sym}: {len(combined)} training rows, "
-                    f"win_rate={combined['__label__'].mean():.2%}")
+        # Validate and append short
+        if len(combined_short) >= 20:
+            label_stats = validator.validate_label_distribution(combined_short["__label__"], min_samples=20)
+            if label_stats["valid"]:
+                all_X_short.append(combined_short)
 
-    if not all_X:
-        logger.error("No training data collected for LONGTERM — aborting")
+    if not all_X_long or not all_X_short:
+        logger.error("No training data collected for LONGTERM long/short — aborting")
         return
 
-    combined_all = pd.concat(all_X, ignore_index=True)
-    combined_all = combined_all.sort_values("__date__").reset_index(drop=True)
-    combined_all = combined_all.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
+    # Train Long Model
+    combined_all_long = pd.concat(all_X_long, ignore_index=True)
+    combined_all_long = combined_all_long.sort_values("__date__").reset_index(drop=True)
+    combined_all_long = combined_all_long.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
 
-    X = combined_all[LONGTERM_FEATURES]
-    y = combined_all["__label__"].astype(int)
-    logger.info(f"Total LONGTERM training rows: {len(X)}, overall win_rate={y.mean():.2%}")
+    X_long = combined_all_long[LONGTERM_FEATURES]
+    y_long = combined_all_long["__label__"].astype(int)
+    logger.info(f"Total LONGTERM LONG training rows: {len(X_long)}, win_rate={y_long.mean():.2%}")
 
-    # Final validation on combined dataset
-    final_stats = validator.validate_label_distribution(y, min_samples=100)
-    if not final_stats["valid"]:
-        logger.error("Combined LONGTERM label validation failed — aborting")
-        return
+    model_long = MetaEnsemble(timeframe="LONGTERM", model_dir=model_dir, feature_cols=LONGTERM_FEATURES)
+    metrics_long = model_long.fit(X_long, y_long)
+    model_long.save(os.path.join(model_dir, "meta_ensemble_longterm_long"))
+    logger.info(f"LONGTERM Long MetaEnsemble saved. Metrics: {metrics_long}")
 
-    model     = MetaEnsemble(timeframe="LONGTERM", model_dir=model_dir, feature_cols=LONGTERM_FEATURES)
-    metrics   = model.fit(X, y)
-    save_path = model.save(os.path.join(model_dir, "meta_ensemble_longterm"))
-    logger.info(f"LONGTERM MetaEnsemble saved. Metrics: {metrics}")
+    # Train Short Model
+    combined_all_short = pd.concat(all_X_short, ignore_index=True)
+    combined_all_short = combined_all_short.sort_values("__date__").reset_index(drop=True)
+    combined_all_short = combined_all_short.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
 
-    imputer = SimpleImputer(strategy="median").fit(X)
+    X_short = combined_all_short[LONGTERM_FEATURES]
+    y_short = combined_all_short["__label__"].astype(int)
+    logger.info(f"Total LONGTERM SHORT training rows: {len(X_short)}, win_rate={y_short.mean():.2%}")
+
+    model_short = MetaEnsemble(timeframe="LONGTERM", model_dir=model_dir, feature_cols=LONGTERM_FEATURES)
+    metrics_short = model_short.fit(X_short, y_short)
+    model_short.save(os.path.join(model_dir, "meta_ensemble_longterm_short"))
+    logger.info(f"LONGTERM Short MetaEnsemble saved. Metrics: {metrics_short}")
+
+    # Fit Imputer
+    imputer = SimpleImputer(strategy="median").fit(X_long)
     ModelRegistry(model_dir=model_dir).save_imputer("LONGTERM", imputer)
 
-    # Register in singleton so downstream calls within same process pick it up
-    ModelRegistry().register("META_LONGTERM_v1", "LONGTERM", model)
+    # Register in singleton
+    ModelRegistry().register("META_LONGTERM_v1_long", "LONGTERM", model_long)
+    ModelRegistry().register("META_LONGTERM_v1_short", "LONGTERM", model_short)
 
 
 def train_swing(symbols: list[str], model_dir: str) -> None:
-    logger.info("=== Training XGB_SWING_v1 (EnsembleModel) ===")
+    logger.info("=== Training XGB_SWING_v1 (Long & Short Models) ===")
 
     validator = LabelValidator()
-    all_X: list[pd.DataFrame] = []
-    all_y: list[pd.Series]    = []
+    all_X_long: list[pd.DataFrame] = []
+    all_X_short: list[pd.DataFrame] = []
 
     for sym in symbols:
         logger.info(f"  Fetching daily data for {sym}...")
@@ -200,61 +219,84 @@ def train_swing(symbols: list[str], model_dir: str) -> None:
         macro_df = extract_historical_macro(pd.DatetimeIndex(df["timestamp"]))
         extra_data = {col: macro_df[col] for col in macro_df.columns}
         feats = build_features(df, "SWING", extra=extra_data)
-        label = build_label(df, "SWING")
+        
+        # Build long and short labels
+        label_long = build_label(df, "SWING", side="long")
+        label_short = build_label(df, "SWING", side="short")
 
-        combined = feats[SWING_FEATURES].copy()
-        combined["__label__"] = label.values
-        combined["__symbol__"] = sym
-        combined["__date__"] = combined.index
-        combined = combined.dropna()
+        # Align long
+        combined_long = feats[SWING_FEATURES].copy()
+        combined_long["__label__"] = label_long.values
+        combined_long["__symbol__"] = sym
+        combined_long["__date__"] = combined_long.index
+        combined_long = combined_long.dropna()
 
-        if len(combined) < 30:
-            continue
+        # Align short
+        combined_short = feats[SWING_FEATURES].copy()
+        combined_short["__label__"] = label_short.values
+        combined_short["__symbol__"] = sym
+        combined_short["__date__"] = combined_short.index
+        combined_short = combined_short.dropna()
 
-        # Validate label distribution before including in training set
-        label_stats = validator.validate_label_distribution(combined["__label__"], min_samples=30)
-        if not label_stats["valid"]:
-            logger.warning(f"  {sym}: label validation failed — skipping")
-            continue
+        # Validate and append long
+        if len(combined_long) >= 30:
+            label_stats = validator.validate_label_distribution(combined_long["__label__"], min_samples=30)
+            if label_stats["valid"]:
+                all_X_long.append(combined_long)
 
-        all_X.append(combined)
-        logger.info(f"  {sym}: {len(combined)} rows, win_rate={combined['__label__'].mean():.2%}")
+        # Validate and append short
+        if len(combined_short) >= 30:
+            label_stats = validator.validate_label_distribution(combined_short["__label__"], min_samples=30)
+            if label_stats["valid"]:
+                all_X_short.append(combined_short)
 
-    if not all_X:
-        logger.error("No training data collected for SWING — aborting")
+    if not all_X_long or not all_X_short:
+        logger.error("No training data collected for SWING long/short — aborting")
         return
 
-    combined_all = pd.concat(all_X, ignore_index=True)
-    combined_all = combined_all.sort_values("__date__").reset_index(drop=True)
-    combined_all = combined_all.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
+    # Train Long Model
+    combined_all_long = pd.concat(all_X_long, ignore_index=True)
+    combined_all_long = combined_all_long.sort_values("__date__").reset_index(drop=True)
+    combined_all_long = combined_all_long.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
 
-    X = combined_all[SWING_FEATURES]
-    y = combined_all["__label__"].astype(int)
-    logger.info(f"Total SWING training rows: {len(X)}, overall win_rate={y.mean():.2%}")
+    X_long = combined_all_long[SWING_FEATURES]
+    y_long = combined_all_long["__label__"].astype(int)
+    logger.info(f"Total SWING LONG training rows: {len(X_long)}, win_rate={y_long.mean():.2%}")
 
-    # Final validation on combined dataset
-    final_stats = validator.validate_label_distribution(y, min_samples=100)
-    if not final_stats["valid"]:
-        logger.error("Combined SWING label validation failed — aborting")
-        return
+    model_long = MetaEnsemble(timeframe="SWING", model_dir=model_dir, feature_cols=SWING_FEATURES)
+    metrics_long = model_long.fit(X_long, y_long)
+    model_long.save(os.path.join(model_dir, "meta_ensemble_swing_long"))
+    logger.info(f"SWING Long MetaEnsemble saved. Metrics: {metrics_long}")
 
-    model    = MetaEnsemble(timeframe="SWING", model_dir=model_dir, feature_cols=SWING_FEATURES)
-    metrics  = model.fit(X, y)
-    save_dir = model.save(os.path.join(model_dir, "meta_ensemble_swing"))
-    logger.info(f"SWING MetaEnsemble saved → {save_dir}. Metrics: {metrics}")
+    # Train Short Model
+    combined_all_short = pd.concat(all_X_short, ignore_index=True)
+    combined_all_short = combined_all_short.sort_values("__date__").reset_index(drop=True)
+    combined_all_short = combined_all_short.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
 
-    imputer = SimpleImputer(strategy="median").fit(X)
+    X_short = combined_all_short[SWING_FEATURES]
+    y_short = combined_all_short["__label__"].astype(int)
+    logger.info(f"Total SWING SHORT training rows: {len(X_short)}, win_rate={y_short.mean():.2%}")
+
+    model_short = MetaEnsemble(timeframe="SWING", model_dir=model_dir, feature_cols=SWING_FEATURES)
+    metrics_short = model_short.fit(X_short, y_short)
+    model_short.save(os.path.join(model_dir, "meta_ensemble_swing_short"))
+    logger.info(f"SWING Short MetaEnsemble saved. Metrics: {metrics_short}")
+
+    # Fit Imputer
+    imputer = SimpleImputer(strategy="median").fit(X_long)
     ModelRegistry(model_dir=model_dir).save_imputer("SWING", imputer)
 
-    ModelRegistry().register("META_SWING_v1", "SWING", model)
+    # Register in singleton
+    ModelRegistry().register("META_SWING_v1_long", "SWING", model_long)
+    ModelRegistry().register("META_SWING_v1_short", "SWING", model_short)
 
 
 def train_intraday(symbols: list[str], model_dir: str) -> None:
-    logger.info("=== Training LGBM_INTRADAY_v1 ===")
+    logger.info("=== Training LGBM_INTRADAY_v1 (Long & Short Models) ===")
 
     validator = LabelValidator()
-    all_X: list[pd.DataFrame] = []
-    all_y: list[pd.Series]    = []
+    all_X_long: list[pd.DataFrame] = []
+    all_X_short: list[pd.DataFrame] = []
 
     for sym in symbols:
         logger.info(f"  Fetching 1m data for {sym}...")
@@ -266,53 +308,76 @@ def train_intraday(symbols: list[str], model_dir: str) -> None:
         macro_df = extract_historical_macro(pd.DatetimeIndex(df["timestamp"]))
         extra_data = {col: macro_df[col] for col in macro_df.columns}
         feats = build_features(df, "INTRADAY", extra=extra_data)
-        label = build_label(df, "INTRADAY")
+        
+        # Build long and short labels
+        label_long = build_label(df, "INTRADAY", side="long")
+        label_short = build_label(df, "INTRADAY", side="short")
 
-        combined = feats[INTRADAY_FEATURES].copy()
-        combined["__label__"] = label.values
-        combined["__symbol__"] = sym
-        combined["__date__"] = combined.index
-        combined = combined.dropna()
+        # Align long
+        combined_long = feats[INTRADAY_FEATURES].copy()
+        combined_long["__label__"] = label_long.values
+        combined_long["__symbol__"] = sym
+        combined_long["__date__"] = combined_long.index
+        combined_long = combined_long.dropna()
 
-        if len(combined) < 30:
-            continue
+        # Align short
+        combined_short = feats[INTRADAY_FEATURES].copy()
+        combined_short["__label__"] = label_short.values
+        combined_short["__symbol__"] = sym
+        combined_short["__date__"] = combined_short.index
+        combined_short = combined_short.dropna()
 
-        # Validate label distribution before including in training set
-        label_stats = validator.validate_label_distribution(combined["__label__"], min_samples=30)
-        if not label_stats["valid"]:
-            logger.warning(f"  {sym}: label validation failed — skipping")
-            continue
+        # Validate and append long
+        if len(combined_long) >= 30:
+            label_stats = validator.validate_label_distribution(combined_long["__label__"], min_samples=30)
+            if label_stats["valid"]:
+                all_X_long.append(combined_long)
 
-        all_X.append(combined)
-        logger.info(f"  {sym}: {len(combined)} rows, win_rate={combined['__label__'].mean():.2%}")
+        # Validate and append short
+        if len(combined_short) >= 30:
+            label_stats = validator.validate_label_distribution(combined_short["__label__"], min_samples=30)
+            if label_stats["valid"]:
+                all_X_short.append(combined_short)
 
-    if not all_X:
-        logger.error("No training data collected for INTRADAY — aborting")
+    if not all_X_long or not all_X_short:
+        logger.error("No training data collected for INTRADAY long/short — aborting")
         return
 
-    combined_all = pd.concat(all_X, ignore_index=True)
-    combined_all = combined_all.sort_values("__date__").reset_index(drop=True)
-    combined_all = combined_all.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
+    # Train Long Model
+    combined_all_long = pd.concat(all_X_long, ignore_index=True)
+    combined_all_long = combined_all_long.sort_values("__date__").reset_index(drop=True)
+    combined_all_long = combined_all_long.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
 
-    X = combined_all[INTRADAY_FEATURES]
-    y = combined_all["__label__"].astype(int)
-    logger.info(f"Total INTRADAY training rows: {len(X)}, overall win_rate={y.mean():.2%}")
+    X_long = combined_all_long[INTRADAY_FEATURES]
+    y_long = combined_all_long["__label__"].astype(int)
+    logger.info(f"Total INTRADAY LONG training rows: {len(X_long)}, win_rate={y_long.mean():.2%}")
 
-    # Final validation on combined dataset
-    final_stats = validator.validate_label_distribution(y, min_samples=100)
-    if not final_stats["valid"]:
-        logger.error("Combined INTRADAY label validation failed — aborting")
-        return
+    model_long = MetaEnsemble(timeframe="INTRADAY", model_dir=model_dir, feature_cols=INTRADAY_FEATURES)
+    metrics_long = model_long.fit(X_long, y_long)
+    model_long.save(os.path.join(model_dir, "meta_ensemble_intraday_long"))
+    logger.info(f"INTRADAY Long MetaEnsemble saved. Metrics: {metrics_long}")
 
-    model     = MetaEnsemble(timeframe="INTRADAY", model_dir=model_dir, feature_cols=INTRADAY_FEATURES)
-    metrics   = model.fit(X, y)
-    save_path = model.save(os.path.join(model_dir, "meta_ensemble_intraday"))
-    logger.info(f"INTRADAY MetaEnsemble saved. Metrics: {metrics}")
+    # Train Short Model
+    combined_all_short = pd.concat(all_X_short, ignore_index=True)
+    combined_all_short = combined_all_short.sort_values("__date__").reset_index(drop=True)
+    combined_all_short = combined_all_short.drop_duplicates(subset=["__symbol__", "__date__"]).reset_index(drop=True)
 
-    imputer = SimpleImputer(strategy="median").fit(X)
+    X_short = combined_all_short[INTRADAY_FEATURES]
+    y_short = combined_all_short["__label__"].astype(int)
+    logger.info(f"Total INTRADAY SHORT training rows: {len(X_short)}, win_rate={y_short.mean():.2%}")
+
+    model_short = MetaEnsemble(timeframe="INTRADAY", model_dir=model_dir, feature_cols=INTRADAY_FEATURES)
+    metrics_short = model_short.fit(X_short, y_short)
+    model_short.save(os.path.join(model_dir, "meta_ensemble_intraday_short"))
+    logger.info(f"INTRADAY Short MetaEnsemble saved. Metrics: {metrics_short}")
+
+    # Fit Imputer
+    imputer = SimpleImputer(strategy="median").fit(X_long)
     ModelRegistry(model_dir=model_dir).save_imputer("INTRADAY", imputer)
 
-    ModelRegistry().register("META_INTRADAY_v1", "INTRADAY", model)
+    # Register in singleton
+    ModelRegistry().register("META_INTRADAY_v1_long", "INTRADAY", model_long)
+    ModelRegistry().register("META_INTRADAY_v1_short", "INTRADAY", model_short)
 
 
 # ---------------------------------------------------------------------------

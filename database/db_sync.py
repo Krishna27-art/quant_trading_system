@@ -32,6 +32,20 @@ try:
 
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     logger.info("Synchronous database engine initialized successfully.")
+
+    # SQLite schema migration helper
+    if is_sqlite:
+        import sqlite3
+        db_path = DATABASE_URL.replace("sqlite:///", "")
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("ALTER TABLE predictions ADD COLUMN expected_return REAL")
+            conn.commit()
+            conn.close()
+            logger.info("Migrated SQLite database: added expected_return column to predictions table.")
+        except Exception:
+            pass
 except Exception as e:
     logger.error(f"Failed to initialize synchronous database engine: {e}")
     engine = None

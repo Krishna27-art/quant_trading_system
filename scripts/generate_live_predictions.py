@@ -75,6 +75,8 @@ TIMEFRAME_CONFIG = {
         "sl_pct": 0.0075,
         "target_multiplier": 2.5,  # Target = ATR * 2.5 (was hardcoded 2.0)
         "sl_multiplier": 1.0,    # SL = ATR * 1.0
+        "atr_min_pct": 0.0005,
+        "atr_max_pct": 0.01,
         "model_version_key": "INTRADAY_MODEL_VERSION",
         "default_version": "META_INTRADAY_v1",
     },
@@ -87,6 +89,8 @@ TIMEFRAME_CONFIG = {
         "sl_pct": 0.015,
         "target_multiplier": 3.0,  # Target = ATR * 3.0 (was hardcoded 2.0)
         "sl_multiplier": 1.0,    # SL = ATR * 1.0
+        "atr_min_pct": 0.001,
+        "atr_max_pct": 0.05,
         "model_version_key": "SWING_MODEL_VERSION",
         "default_version": "META_SWING_v1",
     },
@@ -99,6 +103,8 @@ TIMEFRAME_CONFIG = {
         "sl_pct": 0.10,
         "target_multiplier": 2.5,  # Target = ATR * 2.5 (was hardcoded 2.0)
         "sl_multiplier": 1.0,    # SL = ATR * 1.0
+        "atr_min_pct": 0.005,
+        "atr_max_pct": 0.20,
         "model_version_key": "LONGTERM_MODEL_VERSION",
         "default_version": "META_LONGTERM_v1",
     },
@@ -347,6 +353,35 @@ def generate_explanation(features: pd.Series, direction: str, timeframe: str) ->
     return " | ".join(reasons)
 
 
+def compute_local_attributions(model, X_df: pd.DataFrame, feature_cols: list[str]) -> list[tuple[str, float]]:
+    """Compute exact feature contributions to the logistic regression model's prediction."""
+    try:
+        if not hasattr(model, "logistic") or model.logistic is None or model.logistic.pipeline is None:
+            return []
+        pipeline = model.logistic.pipeline
+        clf = pipeline.named_steps.get("classifier")
+        scaler = pipeline.named_steps.get("scaler")
+        imputer = pipeline.named_steps.get("imputer")
+        
+        if clf is None or scaler is None or imputer is None:
+            return []
+            
+        raw_vals = X_df[feature_cols].values
+        imputed_vals = imputer.transform(raw_vals)
+        scaled_vals = scaler.transform(imputed_vals)[0]
+        
+        coefs = clf.coef_[0]
+        contributions = coefs * scaled_vals
+        
+        attribs = list(zip(feature_cols, contributions))
+        attribs.sort(key=lambda item: abs(item[1]), reverse=True)
+        return attribs
+    except Exception as exc:
+        logger.error(f"Error computing local attributions: {exc}")
+        return []
+
+
+
 
 
 
@@ -354,7 +389,9 @@ def generate_explanation(features: pd.Series, direction: str, timeframe: str) ->
 def compute_sl_target(entry: float, direction: str, atr: float,
                        base_target_pct: float, base_sl_pct: float,
                        target_multiplier: float = 2.0,
-                       sl_multiplier: float = 1.0) -> tuple[float, float]:
+                       sl_multiplier: float = 1.0,
+                       atr_min_pct: float = 0.001,
+                       atr_max_pct: float = 0.05) -> tuple[float, float]:
     """
     ATR-scaled stop-loss and target.
     Uses ATR if available and reasonable, else falls back to fixed percentage.
@@ -367,14 +404,16 @@ def compute_sl_target(entry: float, direction: str, atr: float,
         base_sl_pct: Fallback stop-loss percentage if ATR unavailable
         target_multiplier: Multiplier for ATR when computing target distance
         sl_multiplier: Multiplier for ATR when computing stop-loss distance
+        atr_min_pct: Minimum sensible ATR percentage
+        atr_max_pct: Maximum sensible ATR percentage
     
     Returns:
         (stop_loss, target_price) tuple
     """
     atr_pct = atr / entry if entry > 0 and not np.isnan(atr) else 0.0
 
-    # Use ATR if it's within a sensible range (0.1% - 5%)
-    if 0.001 < atr_pct < 0.05:
+    # Use ATR if it's within a sensible range
+    if atr_min_pct < atr_pct < atr_max_pct:
         sl_distance = max(atr_pct * sl_multiplier, base_sl_pct)
         target_distance = max(atr_pct * target_multiplier, base_target_pct)
     else:
@@ -397,20 +436,27 @@ def compute_sl_target(entry: float, direction: str, atr: float,
 
 def generate_predictions_for_timeframe(
     timeframe: str,
-    model,
+    model_long,
+    model_short,
     model_version: str,
     macro: dict,
     config: dict,
     circuit_breaker: CircuitBreaker,
     portfolio_risk: PortfolioRiskEngine,
     now: "datetime",
-) -> list[dict]:
+    db,
+) -> list[SignalPrediction]:
     """
-    Score all SYMBOLS for one timeframe using the loaded model.
-    Returns a list of prediction dicts ready to insert into the database.
+    Score all SYMBOLS for one timeframe using the loaded long/short models.
+    Returns a list of SignalPrediction objects ready to insert into the database.
     """
     predictions = []
     atr_window = config["atr_window"]
+
+    # Load existing open predictions to track portfolio risk controls
+    from database.models import Prediction
+    open_preds = db.query(Prediction).filter(Prediction.actual_outcome == "OPEN").all()
+    current_open_positions = [{"symbol": p.symbol, "horizon": p.horizon} for p in open_preds]
 
     # Use canonical feature definitions from base_logistic.py
     # This ensures training and inference use the same feature columns
@@ -486,7 +532,19 @@ def generate_predictions_for_timeframe(
 
             X = pd.DataFrame([features[available_features]])
 
-            # Get calibrated probability from model
+            direction, direction_votes = infer_direction_from_features(features, timeframe)
+
+            # Route to correct side model (fall back to either model if side specific model is not found)
+            model = model_long if direction == "BUY" else model_short
+            if model is None or not model.is_ready():
+                # Fallback to the other side's model if one is missing (graceful degradation)
+                model = model_long if model_long is not None and model_long.is_ready() else model_short
+
+            if model is None or not model.is_ready():
+                logger.error(f"No ready model available for {timeframe} ({direction}). Skipping prediction.")
+                continue
+
+            # Get calibrated probability from the selected model
             try:
                 proba = model.predict_proba(X)[0]
                 if isinstance(proba, (np.ndarray, list)) and len(proba) > 1:
@@ -498,19 +556,15 @@ def generate_predictions_for_timeframe(
                 raw = float(model.predict(X)[0])
                 win_prob = float(np.clip(raw, 0.0, 1.0))
 
+            # Raw win prob from side-specific model directly reflects correct outcome side
+            raw_win_prob = win_prob
+
             # Apply probability calibration if a calibrator artifact exists.
             # Falls back to raw win_prob if no calibrator has been fitted yet
             # (cold start — needs 100-500 resolved predictions first).
-            raw_win_prob = win_prob
-            win_prob = calibrate_or_passthrough(win_prob, timeframe=timeframe)
+            win_prob = calibrate_or_passthrough(raw_win_prob, timeframe=timeframe, direction=direction)
             if win_prob != raw_win_prob:
-                logger.debug(f"{sym} [{timeframe}]: raw={raw_win_prob:.3f} calibrated={win_prob:.3f}")
-
-            direction, direction_votes = infer_direction_from_features(features, timeframe)
-
-            # Invert probability if trade direction is SELL (since model outputs P(long/upside wins))
-            if direction == "SELL":
-                win_prob = 1.0 - win_prob
+                logger.debug(f"{sym} [{timeframe}] ({direction}): raw={raw_win_prob:.3f} calibrated={win_prob:.3f}")
 
             # Hard filter: only emit high-confidence predictions
             # Do this AFTER direction logic, so direction isn't dead
@@ -525,6 +579,12 @@ def generate_predictions_for_timeframe(
                 logger.warning(f"{sym} [{timeframe}]: VIX circuit breaker triggered (VIX={current_vix}), skipping.")
                 continue
             win_prob = adjusted_confidence  # Use confidence adjusted by circuit breaker
+
+            # Portfolio risk check
+            is_allowed, risk_reason = portfolio_risk.check_position_limits(current_open_positions, sym)
+            if not is_allowed:
+                logger.warning(f"{sym} [{timeframe}]: Portfolio risk limit check failed: {risk_reason}. Skipping prediction.")
+                continue
 
             # Net edge check: expected value after transaction costs
             # EV = win_prob * target_pct - (1 - win_prob) * sl_pct - roundtrip_cost
@@ -546,7 +606,9 @@ def generate_predictions_for_timeframe(
                 entry, direction, atr_val,
                 config["target_pct"], config["sl_pct"],
                 target_multiplier=config.get("target_multiplier", 2.0),
-                sl_multiplier=config.get("sl_multiplier", 1.0)
+                sl_multiplier=config.get("sl_multiplier", 1.0),
+                atr_min_pct=config.get("atr_min_pct", 0.001),
+                atr_max_pct=config.get("atr_max_pct", 0.05),
             )
 
             feat_summary = {
@@ -558,21 +620,43 @@ def generate_predictions_for_timeframe(
             for feat_name in available_features:
                 feat_summary[feat_name] = round(float(features[feat_name]), 4)
 
-            explanation = generate_explanation(features, direction, timeframe)
+            attribs = compute_local_attributions(model, X, available_features)
+            feat_summary["top_attributions"] = {name: round(val, 4) for name, val in attribs[:5]}
 
-            predictions.append({
-                "symbol": sym,
-                "timeframe": timeframe,
-                "direction": direction,
-                "entry_price": entry,
-                "stop_loss": sl,
-                "target_price": target,
-                "predicted_probability": round(win_prob, 4),
-                "model_version": model_version,
-                "feature_version": FEATURE_SCHEMA_VERSION,
-                "features_json": json.dumps(feat_summary),
-                "reason": explanation,
-            })
+            explanation = generate_explanation(features, direction, timeframe)
+            if attribs:
+                drivers_str = ", ".join([f"{name} ({'+' if val >= 0 else ''}{round(val, 2)})" for name, val in attribs[:3]])
+                explanation += f" | Model Drivers: {drivers_str}"
+
+            # Convert direction to Pydantic prediction format: 2=long (BUY), 1=short (SELL), 0=hold
+            pred_class = 2 if direction == "BUY" else 1
+
+            # Compute risk_reward_ratio
+            risk_amt = abs(entry - sl)
+            reward_amt = abs(target - entry)
+            rr_ratio = reward_amt / risk_amt if risk_amt > 0 else 0.0
+
+            sig_pred = SignalPrediction(
+                date=now,
+                symbol=sym,
+                prediction=pred_class,
+                confidence=round(win_prob, 4),
+                win_probability=round(win_prob, 4),
+                target_price=target,
+                stop_loss=sl,
+                expected_return=round(ev, 6),
+                risk_reward_ratio=round(rr_ratio, 2),
+                model_version=model_version,
+                metadata={
+                    "timeframe": timeframe,
+                    "feature_version": FEATURE_SCHEMA_VERSION,
+                    "features_json": json.dumps(feat_summary),
+                    "reason": explanation,
+                    "entry_price": entry,
+                }
+            )
+            predictions.append(sig_pred)
+            current_open_positions.append({"symbol": sym, "horizon": timeframe})
 
             logger.info(
                 f"{sym} [{timeframe}] {direction} entry={entry} "
@@ -618,10 +702,9 @@ def run():
         logger.critical("Database session unavailable. Check DATABASE_URL. Aborting.")
         sys.exit(1)
 
-    # Initialize risk governance components
+    # Initialize risk governance components (historical_var dropped as it is unused)
     circuit_breaker = CircuitBreaker()
     portfolio_risk = PortfolioRiskEngine(total_capital=10_000_000)
-    historical_var = HistoricalVaR(confidence_level=0.99, lookback_window=252)
 
     logger.info("Risk governance components initialized")
 
@@ -632,8 +715,8 @@ def run():
     now = now_ist()
     db = SessionLocal()
 
+    # 1. Store index ticks (isolated try/except to avoid blocking prediction generation)
     try:
-        # Store index ticks
         for idx in fetch_market_indices():
             db.add(IndexTick(
                 timestamp=now,
@@ -641,74 +724,89 @@ def run():
                 value=idx["price"],
                 change=idx["change_pct"],
             ))
+        db.commit()
+        logger.info("Stored market index ticks.")
+    except Exception as e:
+        logger.error(f"Error storing market index ticks: {e}")
+        db.rollback()
 
-        all_predictions = []
-
-        for timeframe, config in TIMEFRAME_CONFIG.items():
+    # 2. Generate and store predictions timeframe by timeframe
+    for timeframe, config in TIMEFRAME_CONFIG.items():
+        try:
             model_version = get_model_version(
                 config["model_version_key"],
                 config["default_version"],
             )
 
-            model = load_model(model_version, timeframe)
-            if model is None:
-                # No trained model — skip this timeframe entirely
-                # Run scripts/train_base_models.py to create the artifact
-                continue
+            model_long = load_model(model_version + "_long", timeframe)
+            model_short = load_model(model_version + "_short", timeframe)
+            if model_long is None and model_short is None:
+                # Try fallback to legacy unsuffixed version
+                legacy_model = load_model(model_version, timeframe)
+                if legacy_model is None:
+                    continue
+                model_long = legacy_model
+                model_short = legacy_model
 
             preds = generate_predictions_for_timeframe(
                 timeframe=timeframe,
-                model=model,
+                model_long=model_long,
+                model_short=model_short,
                 model_version=model_version,
                 macro=macro,
                 config=config,
                 circuit_breaker=circuit_breaker,
                 portfolio_risk=portfolio_risk,
                 now=now,
-            )
-            all_predictions.extend(preds)
-
-        if not all_predictions:
-            logger.warning(
-                "No predictions generated. Either no trained models exist "
-                "or no symbol passed the EV filter. "
-                "Check MODEL_DIR and run training/train_models.py."
+                db=db,
             )
 
-        for sig in all_predictions:
-            db.add(Prediction(
-                id=str(uuid.uuid4()),
-                symbol=sig["symbol"],
-                horizon=sig["timeframe"],
-                prediction=sig["direction"],
-                entry_price=sig["entry_price"],
-                stop_loss=sig["stop_loss"],
-                target_price=sig["target_price"],
-                confidence=sig["predicted_probability"],
-                model_version=sig["model_version"],
-                feature_version=sig["feature_version"],
-                features_used=sig["features_json"],
-                reason=sig["reason"],
-                actual_outcome="OPEN",
-                prediction_time=now,
-                expiry_time=_expiry_time(sig["timeframe"], now),
-            ))
-            db.add(Tick(
-                time=now,
-                symbol=sig["symbol"],
-                ltp=sig["entry_price"],
-                volume=0,
-            ))
+            if not preds:
+                logger.info(f"No predictions generated for timeframe {timeframe}.")
+                continue
 
-        db.commit()
-        logger.info(f"Committed {len(all_predictions)} predictions to database.")
+            # Store predictions for this timeframe
+            for sig in preds:
+                # Idempotency guard: supersede existing OPEN predictions for (symbol, horizon)
+                try:
+                    existing_open = db.query(Prediction).filter(
+                        Prediction.symbol == sig.symbol,
+                        Prediction.horizon == sig.metadata["timeframe"],
+                        Prediction.actual_outcome == "OPEN"
+                    ).all()
+                    for old_pred in existing_open:
+                        old_pred.actual_outcome = "SUPERSEDED"
+                except Exception as ex:
+                    logger.error(f"Error running idempotency guard check: {ex}")
 
-    except Exception as e:
-        logger.critical(f"Fatal error in prediction run: {e}", exc_info=True)
-        db.rollback()
-        sys.exit(1)
-    finally:
-        db.close()
+                # Save new prediction (synthetic Tick insert removed!)
+                db.add(Prediction(
+                    id=str(uuid.uuid4()),
+                    symbol=sig.symbol,
+                    horizon=sig.metadata["timeframe"],
+                    prediction="BUY" if sig.prediction == 2 else "SELL",
+                    entry_price=sig.metadata["entry_price"],
+                    stop_loss=sig.stop_loss,
+                    target_price=sig.target_price,
+                    confidence=sig.win_probability,
+                    expected_return=sig.expected_return,
+                    model_version=sig.model_version,
+                    feature_version=sig.metadata["feature_version"],
+                    features_used=sig.metadata["features_json"],
+                    reason=sig.metadata["reason"],
+                    actual_outcome="OPEN",
+                    prediction_time=now,
+                    expiry_time=_expiry_time(sig.metadata["timeframe"], now),
+                ))
+
+            db.commit()
+            logger.info(f"Committed {len(preds)} predictions for timeframe {timeframe} to database.")
+
+        except Exception as e:
+            logger.error(f"Failed prediction run for timeframe {timeframe}: {e}")
+            db.rollback()
+
+    db.close()
 
 
 def _expiry_time(timeframe: str, now: datetime) -> datetime:

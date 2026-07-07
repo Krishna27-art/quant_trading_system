@@ -24,7 +24,23 @@ class HuggingFaceClient(BaseLLMClient):
         if env.upper() in ("LIVE", "PAPER"):
             raise RuntimeError("Fatal: LLM mock response triggered in live/paper environment!")
             
-        if "Pre-Market" in system_prompt or "Indian equities day trading analyst" in system_prompt or "institutional quantitative strategist" in system_prompt:
+        if "losing_factors" in system_prompt or "post-mortem" in system_prompt.lower():
+            return json.dumps({
+                "losing_factors": [
+                    "High VIX (>20) intraday spikes causing wide ATR swings",
+                    "Large entry VWAP distance (>0.8%) causing mean reversion drag"
+                ],
+                "winning_factors": [
+                    "Strong 5-minute price momentum matching the daily trend direction",
+                    "High volume confirmation ratio (>1.5x of 20-period average)"
+                ],
+                "analysis": "Mock analysis of winners and losers.",
+                "actionable_warnings": [
+                    "High stop-loss rate observed for intraday momentum strategies in high VIX (>20) regimes."
+                ],
+                "suggested_threshold_adjustments": "Recommend increasing the confidence threshold constraint from 0.55 to 0.62 for INTRADAY trades."
+            })
+        elif "Pre-Market" in system_prompt or "Indian equities day trading analyst" in system_prompt or "institutional quantitative strategist" in system_prompt:
             return json.dumps({
                 "market_regime": "Bullish Trend",
                 "risk_level": "Moderate",

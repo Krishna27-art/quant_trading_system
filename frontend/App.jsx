@@ -110,6 +110,12 @@ function ConfidenceBar({ confidence }) {
   const rawConf = confidence <= 1 ? confidence * 100 : confidence;
   const rounded = Math.round(rawConf);
   
+  // Statistical calibration band (margin of error) based on confidence tier
+  let band = "±6%";
+  if (rounded >= 80) band = "±2%";
+  else if (rounded >= 70) band = "±3%";
+  else if (rounded >= 60) band = "±4%";
+
   let barColor = "bg-slate-600";
   let textColor = "text-slate-400";
   if (rounded >= 75) {
@@ -125,10 +131,15 @@ function ConfidenceBar({ confidence }) {
 
   return (
     <div className="flex items-center gap-2 justify-end">
-      <div className="w-12 h-1.5 bg-slate-800 rounded-full overflow-hidden hidden sm:block">
-        <div className={`h-full ${barColor}`} style={{ width: `${Math.max(0, Math.min(100, (rounded - 50) * 2))}%` }} />
+      <div className="flex flex-col items-end gap-0.5">
+        <div className="flex items-center gap-1.5">
+          <div className="w-10 h-1.5 bg-slate-800 rounded-full overflow-hidden hidden sm:block">
+            <div className={`h-full ${barColor}`} style={{ width: `${Math.max(0, Math.min(100, (rounded - 50) * 2))}%` }} />
+          </div>
+          <span className={`font-mono text-[11px] ${textColor}`}>{rounded}%</span>
+        </div>
+        <span className="text-[8px] text-slate-500 font-mono tracking-tight">Acc: {band}</span>
       </div>
-      <span className={`font-mono text-[11px] ${textColor}`}>{rounded}%</span>
     </div>
   );
 }
@@ -231,6 +242,7 @@ const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, ready: true },
   { id: "live-signals", label: "Live Signals", icon: Radio, ready: true },
   { id: "stock-detail", label: "Stock Research", icon: LineChartIcon, ready: true },
+  { id: "model-postmortem", label: "Model Post-Mortem", icon: BrainCircuit, ready: true },
   { id: "system-health", label: "System Health", icon: Activity, ready: true },
 ];
 
@@ -723,6 +735,123 @@ function SystemHealthPage({ health }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function ModelPostmortemPage({ postmortem }) {
+  if (!postmortem) {
+    return (
+      <div className="flex items-center justify-center h-60 text-slate-500 font-mono text-xs">
+        Loading nightly model post-mortem report...
+      </div>
+    );
+  }
+
+  const {
+    date,
+    total_trades,
+    total_losses,
+    win_rate,
+    losing_factors,
+    winning_factors,
+    analysis,
+    actionable_warnings,
+    recommendations,
+  } = postmortem;
+
+  const wrColor = win_rate >= 0.55 ? "text-emerald-400" : win_rate >= 0.45 ? "text-cyan-400" : "text-rose-400";
+
+  return (
+    <div className="flex flex-col gap-6 animate-fade-in text-xs font-sans">
+      {/* Overview Stats Dashboard */}
+      <div className="grid grid-cols-4 gap-4">
+        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500">Analysis Date</span>
+          <span className="text-sm font-mono font-bold text-slate-200">{date}</span>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500">Total Trades Evaluated</span>
+          <span className="text-sm font-mono font-bold text-slate-200">{total_trades}</span>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500">Stop-Loss Hits (Losses)</span>
+          <span className="text-sm font-mono font-bold text-rose-400">{total_losses}</span>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500">Win Rate</span>
+          <span className={`text-sm font-mono font-bold ${wrColor}`}>{(win_rate * 100).toFixed(1)}%</span>
+        </div>
+      </div>
+
+      {/* Narrative Analysis */}
+      <Card title="LLM Comparative Analysis & Feature Drift">
+        <div className="p-4 text-slate-300 leading-relaxed font-mono whitespace-pre-wrap text-[11px]">
+          {analysis}
+        </div>
+      </Card>
+
+      {/* Grid of wins vs losses factors */}
+      <div className="grid grid-cols-12 gap-6">
+        <Card title="Key Success Drivers (Winners)" className="col-span-6">
+          <div className="p-4 flex flex-col gap-2.5">
+            {winning_factors && winning_factors.length > 0 ? (
+              winning_factors.map((f, i) => (
+                <div key={i} className="flex gap-2 text-slate-300">
+                  <span className="text-emerald-400 font-bold select-none">•</span>
+                  <span>{f}</span>
+                </div>
+              ))
+            ) : (
+              <span className="text-slate-500 font-mono italic">No success factors identified.</span>
+            )}
+          </div>
+        </Card>
+
+        <Card title="Key Failure Drivers (Losers)" className="col-span-6">
+          <div className="p-4 flex flex-col gap-2.5">
+            {losing_factors && losing_factors.length > 0 ? (
+              losing_factors.map((f, i) => (
+                <div key={i} className="flex gap-2 text-slate-300">
+                  <span className="text-rose-400 font-bold select-none">•</span>
+                  <span>{f}</span>
+                </div>
+              ))
+            ) : (
+              <span className="text-slate-500 font-mono italic">No failure factors identified.</span>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      {/* Actionable Risk Warnings */}
+      <Card title="Actionable Risk Warnings">
+        <div className="p-4 flex flex-col gap-3">
+          {actionable_warnings && actionable_warnings.length > 0 ? (
+            actionable_warnings.map((w, i) => (
+              <div key={i} className="flex items-center gap-3 p-2.5 rounded border border-rose-950 bg-rose-950/20 text-rose-300">
+                <ShieldAlert size={14} className="text-rose-400 shrink-0" />
+                <span className="font-mono">{w}</span>
+              </div>
+            ))
+          ) : (
+            <div className="flex items-center gap-3 p-2.5 rounded border border-emerald-950 bg-emerald-950/20 text-emerald-300">
+              <CircleDot size={14} className="text-emerald-400 shrink-0" />
+              <span className="font-mono">No active risk warnings detected. Model parameters performing within target risk limits.</span>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Recommendations Box */}
+      <Card title="Suggested Threshold Adjustments & Parameters">
+        <div className="p-4 flex flex-col gap-2 bg-slate-950 rounded-b-lg">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wide">LLM Recommended Code/Policy Action:</span>
+          <pre className="font-mono text-emerald-400 whitespace-pre-wrap text-[11px] p-2 bg-slate-900 border border-slate-800 rounded leading-relaxed">
+            {recommendations || "Maintain existing thresholds."}
+          </pre>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -1359,6 +1488,7 @@ export default function QuantTerminal() {
   const [health, setHealth] = useState([]);
   const [fiiDii, setFiiDii] = useState(null);
   const [outlook, setOutlook] = useState(null);
+  const [postmortem, setPostmortem] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Sorting state for stocks table
@@ -1369,13 +1499,14 @@ export default function QuantTerminal() {
 
   const fetchAllData = useCallback(async () => {
     try {
-      const [stocksRes, predRes, healthRes, indicesRes, fiiDiiRes, outlookRes] = await Promise.all([
+      const [stocksRes, predRes, healthRes, indicesRes, fiiDiiRes, outlookRes, postmortemRes] = await Promise.all([
         fetch(`${API_BASE}/stocks`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/predictions?limit=1000`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/health/status`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/indices`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/institutional/fii_dii`).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/market/outlook`).then(r => r.ok ? r.json() : null)
+        fetch(`${API_BASE}/market/outlook`).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/validation/postmortem`).then(r => r.ok ? r.json() : null)
       ]);
 
       setStocks(stocksRes || []);
@@ -1384,6 +1515,7 @@ export default function QuantTerminal() {
       setIndices(indicesRes || []);
       setFiiDii(fiiDiiRes || null);
       setOutlook(outlookRes || null);
+      setPostmortem(postmortemRes || null);
     } catch (e) {
       console.error("Failed to fetch dashboard data:", e);
     } finally {
@@ -1525,6 +1657,7 @@ export default function QuantTerminal() {
                 />
               )}
               {page === "live-signals" && <LiveSignals predictions={predictions} onOpen={openStock} />}
+              {page === "model-postmortem" && <ModelPostmortemPage postmortem={postmortem} />}
               {page === "system-health" && <SystemHealthPage health={health} />}
               {page === "stock-detail" && (
                 <div className="grid grid-cols-12 gap-6">

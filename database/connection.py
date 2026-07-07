@@ -531,6 +531,21 @@ def create_tables():
     execute_write("CREATE INDEX IF NOT EXISTS idx_index_ticks_name ON index_ticks(name)")
     execute_write("CREATE INDEX IF NOT EXISTS idx_index_ticks_time ON index_ticks(timestamp)")
 
+    # Model Postmortem table for daily LLM analysis
+    execute_write("""
+        CREATE TABLE IF NOT EXISTS model_postmortem (
+            id TEXT PRIMARY KEY,
+            date DATE UNIQUE NOT NULL,
+            total_trades INTEGER NOT NULL,
+            total_losses INTEGER NOT NULL,
+            win_rate REAL NOT NULL,
+            analysis_json TEXT NOT NULL,
+            recommendations TEXT,
+            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    execute_write("CREATE INDEX IF NOT EXISTS idx_model_postmortem_date ON model_postmortem(date)")
+
     # Run migration to add feature_version column if it doesn't exist
     try:
         execute_write("ALTER TABLE predictions ADD COLUMN feature_version TEXT")

@@ -115,3 +115,17 @@ class AIMarketOutlook(Base):
     raw_json = Column(Text)
     created_at = Column(DateTime, nullable=False)
 
+
+class ModelPostmortem(Base):
+    __tablename__ = "model_postmortem"
+
+    id = Column(String(50), primary_key=True)
+    date = Column(Date, unique=True, nullable=False)
+    total_trades = Column(Integer, nullable=False)
+    total_losses = Column(Integer, nullable=False)
+    win_rate = Column(Float, nullable=False)
+    analysis_json = Column(Text, nullable=False)
+    recommendations = Column(Text)
+    created_at = Column(DateTime, nullable=False)
+
+

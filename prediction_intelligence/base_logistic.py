@@ -140,8 +140,11 @@ def build_label(
         upper_barrier_pct = tp + total_cost_pct
         lower_barrier_pct = sl
     else:
-        upper_barrier_pct = tp
-        lower_barrier_pct = -abs(sl) - total_cost_pct
+        # For a short trade:
+        # Win (lower barrier) is hit when price falls by tp (adjusted for cost)
+        # Loss (upper barrier) is hit when price rises by sl (absolute value)
+        upper_barrier_pct = abs(sl)
+        lower_barrier_pct = -(tp + total_cost_pct)
 
     # Instantiate labeler
     labeler = TripleBarrierLabeler(

@@ -219,6 +219,21 @@ class AIMarketOutlookResponse(BaseModel):
     created_at: str
 
 
+class ModelPostmortemResponse(BaseModel):
+    id: str
+    date: str
+    total_trades: int
+    total_losses: int
+    win_rate: float
+    losing_factors: list[str]
+    winning_factors: list[str]
+    analysis: str
+    actionable_warnings: list[str]
+    recommendations: str | None
+    created_at: str
+
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1665,6 +1680,60 @@ def api_get_validation_report():
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+
+@app.get("/api/validation/postmortem", response_model=ModelPostmortemResponse)
+def api_get_model_postmortem():
+    """Retrieves the latest nightly LLM post-mortem report."""
+    from database.db_sync import SessionLocal
+    from database.models import ModelPostmortem
+    import json
+    
+    db = SessionLocal()
+    try:
+        record = db.query(ModelPostmortem).order_by(ModelPostmortem.date.desc()).first()
+        if not record:
+            from utils.time_utils import now_ist
+            import uuid
+            today = now_ist()
+            return ModelPostmortemResponse(
+                id=str(uuid.uuid4()),
+                date=today.date().isoformat(),
+                total_trades=0,
+                total_losses=0,
+                win_rate=0.0,
+                losing_factors=[],
+                winning_factors=[],
+                analysis="No post-mortem report generated yet. The analysis runs daily at 6:00 PM IST.",
+                actionable_warnings=[],
+                recommendations="No recommendations available yet.",
+                created_at=today.isoformat()
+            )
+            
+        try:
+            analysis_data = json.loads(record.analysis_json)
+        except Exception:
+            analysis_data = {}
+            
+        return ModelPostmortemResponse(
+            id=str(record.id),
+            date=str(record.date),
+            total_trades=int(record.total_trades),
+            total_losses=int(record.total_losses),
+            win_rate=float(record.win_rate),
+            losing_factors=analysis_data.get("losing_factors") or [],
+            winning_factors=analysis_data.get("winning_factors") or [],
+            analysis=analysis_data.get("analysis") or "No analysis text found.",
+            actionable_warnings=analysis_data.get("actionable_warnings") or [],
+            recommendations=record.recommendations,
+            created_at=record.created_at.isoformat()
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch model postmortem: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 
 
 @app.get("/api/validation/signals/today")

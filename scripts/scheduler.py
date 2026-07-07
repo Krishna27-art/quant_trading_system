@@ -394,15 +394,24 @@ async def pre_market_intelligence_job():
 
 
 async def post_trade_analysis_job():
-    logger.info("Running Post-Trade Analysis Job...")
-    system_prompt = (
-        "Analyze these day trades. Identify patterns in winners vs losers. "
-        "What market conditions predicted success? What should be avoided tomorrow?"
-    )
-    user_prompt = "Trades: [WIN on TCS +1.5%], [LOSS on HDFC -0.75%]. Market was trending up."
+    logger.info("Running Daily Post-Trade LLM Analysis and Reflection Job...")
+    try:
+        from database.db_sync import SessionLocal
+        from validation.daily_postmortem import run_daily_postmortem
+        
+        def run_sync():
+            db = SessionLocal()
+            try:
+                run_daily_postmortem(db)
+            finally:
+                db.close()
+                
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, run_sync)
+        logger.info("Post-Trade Reflection generated and saved to DB.")
+    except Exception as e:
+        logger.error(f"Error executing post-trade analysis job: {e}")
 
-    await llm.ask_async(system_prompt, user_prompt)
-    logger.info("Post-Trade Reflection generated.")
 
 
 async def daily_snapshot_pruning_job():
@@ -456,8 +465,8 @@ async def outcome_resolution_job():
 async def cron_event_loop():
     # Pre-market job at 6:00 AM
     pre_market_task = asyncio.create_task(self_correcting_timer(6, 0, pre_market_intelligence_job))
-    # Post-market job at 4:00 PM
-    post_market_task = asyncio.create_task(self_correcting_timer(16, 0, post_trade_analysis_job))
+    # Post-market job at 6:00 PM
+    post_market_task = asyncio.create_task(self_correcting_timer(18, 0, post_trade_analysis_job))
     # Daily outcome resolution and calibration at 5:30 PM (17:30 IST)
     resolution_task = asyncio.create_task(self_correcting_timer(17, 30, outcome_resolution_job))
     # Daily snapshot pruning job at 11:00 PM

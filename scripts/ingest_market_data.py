@@ -21,7 +21,6 @@ from database.connection import (
     create_tables,
     insert_stock,
     insert_stock_price,
-    execute_write,
 )
 from utils.logger import get_logger
 

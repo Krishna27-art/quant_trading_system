@@ -266,11 +266,14 @@ class BacktestingEngine:
         # Initialize deflated Sharpe calculator
         self.deflated_sharpe_calc = DeflatedSharpeCalculator(DeflatedSharpeConfig())
         
-        # Initialize validators
+        # Initialize validators and regime detector
         from research_platform.backtesting.leakage_detector import LeakageDetector
         from research_platform.backtesting.statistical_validator import StatisticalValidator
         self.leakage_detector = LeakageDetector()
         self.statistical_validator = StatisticalValidator()
+        
+        self.regime_detector = VolatilityRegimeDetector()
+        self.logger.info("Initialized HMM Volatility Regime Detector.")
 
     def run_backtest(self, predictions: list[Any], price_data: pd.DataFrame) -> BacktestResult:
         """
@@ -284,10 +287,6 @@ class BacktestingEngine:
             BacktestResult
         """
         self.logger.info("Starting backtest...")
-        
-        # Initialize Volatility Regime Detector
-        self.regime_detector = VolatilityRegimeDetector()
-        self.logger.info("Initialized HMM Volatility Regime Detector.")
         
         self.logger.info(
             f"Starting backtest from {self.config.start_date} to {self.config.end_date}"

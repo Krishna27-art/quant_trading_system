@@ -7,7 +7,7 @@ import time
 import redis
 
 from agents.llm_client import llm
-from data_platform.feeds.feed_manager import FeedManager, FeedTier, TickData
+from data_platform.feeds.feed_manager import FeedManager, TickData
 from utils.structured_logger import get_structured_logger
 
 logger = get_structured_logger("multiprocess_scheduler")

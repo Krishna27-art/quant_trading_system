@@ -5,12 +5,10 @@ Calibrates model probabilities using isotonic regression.
 Ensures predicted probabilities match actual frequencies.
 """
 
-from typing import Optional
 import numpy as np
 from sklearn.isotonic import IsotonicRegression
 from sklearn.calibration import CalibratedClassifierCV
 import joblib
-from pathlib import Path
 
 
 class ProbabilityCalibrator:

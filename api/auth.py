@@ -2,7 +2,6 @@ import os
 from datetime import datetime, timedelta
 
 import jwt
-import sys
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 

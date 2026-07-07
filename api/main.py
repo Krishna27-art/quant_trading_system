@@ -30,6 +30,10 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
+from utils.logger import get_logger
+
+logger = get_logger("api")
+
 # Upstox is the single market-data source — yfinance removed
 try:
     from data_platform.upstox_client import (
@@ -68,14 +72,10 @@ from database.connection import (
     create_tables,
     get_latest_prices,
     get_predictions,
-    get_sector_performance,
     get_stock_price,
     initialize_pool,
 )
-from utils.logger import get_logger
 from utils.time_utils import now_ist
-
-logger = get_logger("api")
 
 # ---------------------------------------------------------------------------
 # App
@@ -164,6 +164,7 @@ class StockData(BaseModel):
 
 
 class PredictionData(BaseModel):
+    id: str | None = None
     date: str
     symbol: str
     prediction: str
@@ -182,6 +183,7 @@ class HealthStatus(BaseModel):
     status: str
     value: str
     message: str
+    details: dict | list | str | None = None
 
 
 class MetricData(BaseModel):
@@ -388,7 +390,8 @@ def get_system_health():
             name=component.name.replace("_", " ").title(),
             status=component.status.value,
             value=f"{component.latency_ms:.1f}ms" if component.latency_ms > 0 else "N/A",
-            message=component.message
+            message=component.message,
+            details=component.details
         ))
     return statuses
 
@@ -581,7 +584,6 @@ def recalibrate(current_user: dict = Depends(verify_token)):
     """
     try:
         from database.db_sync import SessionLocal
-        from database.models import Prediction
         from prediction_intelligence.calibration import fit_calibrator
         from sqlalchemy import text
 
@@ -768,7 +770,6 @@ def create_paper_trade(trade: PaperTradeCreate, current_user: dict = Depends(ver
 def list_paper_trades(status: str | None = Query(default=None), current_user: dict = Depends(verify_token)):
     """List all paper trades, optionally filtered by status."""
     from database.db_sync import SessionLocal
-    from database.models import PaperTrade
     from sqlalchemy import text
 
     db = SessionLocal()
@@ -812,7 +813,6 @@ def list_paper_trades(status: str | None = Query(default=None), current_user: di
 def update_paper_trade(trade_id: str, update: PaperTradeUpdate, current_user: dict = Depends(verify_token)):
     """Update a paper trade (exit price or status)."""
     from database.db_sync import SessionLocal
-    from database.models import PaperTrade
     from sqlalchemy import text
     from utils.time_utils import now_ist
 
@@ -898,7 +898,7 @@ def delete_paper_trade(trade_id: str, current_user: dict = Depends(verify_token)
 def get_fii_dii_flow():
     """FII/DII net flow — not available on Upstox free tier."""
     if UPSTOX_OK:
-        return get_fii_dii_estimate()
+        return {"available": False, "message": "FII/DII data requires NSE data subscription"}
     return {
         "available": False,
         "message": "FII/DII data requires NSE data subscription",
@@ -915,7 +915,7 @@ def get_market_hours():
         if UPSTOX_OK:
             return get_market_status()
         # Inline fallback
-        from datetime import datetime, time, timedelta
+        from datetime import datetime, time
         from zoneinfo import ZoneInfo
         ist = ZoneInfo("Asia/Kolkata")
         now = datetime.now(ist)
@@ -1568,6 +1568,7 @@ def api_get_predictions(
             else:
                 date_str = ""
             result.append(PredictionData(
+                id=str(p.get("id") or ""),
                 date=date_str,
                 symbol=p["symbol"],
                 prediction=p["prediction"],

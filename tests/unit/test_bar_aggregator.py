@@ -3,10 +3,8 @@ Unit tests and latency benchmark for BarAggregator.
 Verifies sliding window OHLCV bar construction and sub-35ms cache reads.
 """
 import time
-import pytest
-import pandas as pd
-from data_platform.feeds.bar_aggregator import BarAggregator, get_default_aggregator, get_cached_ohlcv
-from data_platform.feeds.feed_manager import TickData, FeedTier
+from data_platform.feeds.bar_aggregator import BarAggregator
+from data_platform.feeds.feed_manager import TickData
 
 
 def test_bar_aggregator_basic():

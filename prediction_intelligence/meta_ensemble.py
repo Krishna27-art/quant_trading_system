@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import json
 import os
-import pickle
 from pathlib import Path
-from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import TimeSeriesSplit
 
@@ -67,6 +66,9 @@ class MetaEnsemble:
         self._is_fitted = False
         self.use_stacking_fallback = False
         self.train_metrics = {}
+        # Fitted at train time; applied at inference so missing-value imputation
+        # is identical between training and live prediction paths.
+        self._feature_imputer: SimpleImputer | None = None
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> dict:
         """
@@ -76,6 +78,11 @@ class MetaEnsemble:
         """
         n_samples = len(X)
         logger.info(f"[{self.timeframe}] Training MetaEnsemble with {n_samples} samples.")
+
+        # Fit the feature imputer on training data so that at inference time we
+        # use the same median values, not a hardcoded 0.0.
+        self._feature_imputer = SimpleImputer(strategy="median")
+        self._feature_imputer.fit(X[self.feature_cols].values)
 
         # Decide on stacking vs simple soft-voting fallback
         if n_samples < 250:
@@ -237,8 +244,22 @@ class MetaEnsemble:
         if not self._is_fitted:
             raise RuntimeError("MetaEnsemble must be fitted before predict_proba.")
 
-        # Ensure all feature columns are present and filled
-        X_aligned = X[self.feature_cols].copy().fillna(0.0)
+        # Apply the same median imputation that was used during training.
+        # Previously this was fillna(0.0), which diverged from the training path
+        # (SimpleImputer(strategy='median') inside BaseLogistic) whenever a
+        # feature had NaNs and a non-zero median (e.g. RSI, Z-score).
+        X_raw = X[self.feature_cols].copy()
+        if self._feature_imputer is not None:
+            imputed_values = self._feature_imputer.transform(X_raw.values)
+            X_aligned = pd.DataFrame(imputed_values, index=X_raw.index, columns=self.feature_cols)
+        else:
+            # Fallback for models loaded from older artifacts that pre-date this fix
+            logger.warning(
+                "[%s] feature_imputer not found — falling back to fillna(median). "
+                "Re-train and re-save the model to remove this warning.",
+                self.timeframe,
+            )
+            X_aligned = X_raw.fillna(X_raw.median())
 
         # Get probabilities from all base models
         p_lgbm = self.lgbm.predict_proba(X_aligned)[:, 1]
@@ -273,6 +294,11 @@ class MetaEnsemble:
         self.lgbm.save(target_dir / "lgbm.pkl")
         self.xgb.save(target_dir / "xgb.pkl")
         self.logistic._save(str(target_dir / "logistic.joblib"))
+
+        # Save the feature imputer alongside the model so inference uses the
+        # same per-feature medians that were computed during training.
+        if self._feature_imputer is not None:
+            joblib.dump(self._feature_imputer, target_dir / "feature_imputer.joblib")
 
         # Save meta learner
         if not self.use_stacking_fallback:
@@ -315,6 +341,18 @@ class MetaEnsemble:
 
         if not self.use_stacking_fallback:
             self.meta_learner = joblib.load(target_dir / "meta_learner.joblib")
+
+        # Load the feature imputer; gracefully absent in older artifacts.
+        imputer_path = target_dir / "feature_imputer.joblib"
+        if imputer_path.exists():
+            self._feature_imputer = joblib.load(imputer_path)
+        else:
+            logger.warning(
+                "[%s] feature_imputer.joblib not found in %s. "
+                "Inference will fall back to per-batch median. Re-train to fix.",
+                self.timeframe, target_dir,
+            )
+            self._feature_imputer = None
 
         logger.info(f"[{self.timeframe}] MetaEnsemble loaded ← {target_dir}")
         return self

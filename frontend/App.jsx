@@ -106,6 +106,33 @@ function ProbabilityRing({ value, size = 84 }) {
   );
 }
 
+function ConfidenceBar({ confidence }) {
+  const rawConf = confidence <= 1 ? confidence * 100 : confidence;
+  const rounded = Math.round(rawConf);
+  
+  let barColor = "bg-slate-600";
+  let textColor = "text-slate-400";
+  if (rounded >= 75) {
+    barColor = "bg-emerald-400";
+    textColor = "text-emerald-400 font-bold";
+  } else if (rounded >= 60) {
+    barColor = "bg-cyan-400";
+    textColor = "text-cyan-400 font-semibold";
+  } else if (rounded >= 55) {
+    barColor = "bg-amber-400";
+    textColor = "text-amber-400";
+  }
+
+  return (
+    <div className="flex items-center gap-2 justify-end">
+      <div className="w-12 h-1.5 bg-slate-800 rounded-full overflow-hidden hidden sm:block">
+        <div className={`h-full ${barColor}`} style={{ width: `${Math.max(0, Math.min(100, (rounded - 50) * 2))}%` }} />
+      </div>
+      <span className={`font-mono text-[11px] ${textColor}`}>{rounded}%</span>
+    </div>
+  );
+}
+
 /* ============================================================================
    TOP NAV + MARKET TICKER
 =========================================================================== */
@@ -122,7 +149,7 @@ function MarketTicker({ indices }) {
             </span>
             <span className={`text-[10px] font-mono flex items-center ${up ? "text-emerald-400" : "text-rose-400"}`}>
               {up ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
-              {Math.abs(idx.change).toFixed(2)}%
+              {Math.abs(idx.change_pct ?? 0).toFixed(2)}%
             </span>
           </div>
         );
@@ -204,6 +231,7 @@ const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, ready: true },
   { id: "live-signals", label: "Live Signals", icon: Radio, ready: true },
   { id: "stock-detail", label: "Stock Research", icon: LineChartIcon, ready: true },
+  { id: "system-health", label: "System Health", icon: Activity, ready: true },
 ];
 
 function Sidebar({ page, setPage }) {
@@ -218,7 +246,7 @@ function Sidebar({ page, setPage }) {
               key={item.id}
               onClick={() => setPage(item.id)}
               className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-xs font-medium transition-colors
-                ${active ? "bg-emerald-400/10 text-emerald-400 border border-emerald-500/20" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200 border border-transparent"}`}
+                ${active ? "bg-cyan-400/10 text-cyan-400 border border-cyan-500/20" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200 border border-transparent"}`}
             >
               <Icon size={15} />
               {item.label}
@@ -268,7 +296,7 @@ function TopSignalsTable({ data, onOpen }) {
               <td className="text-right font-mono text-emerald-400">{fmtINR(row.target_price)}</td>
               <td className="text-right font-mono text-rose-400">{fmtINR(row.stop_loss)}</td>
               <td className="text-right text-slate-400 uppercase">{row.horizon}</td>
-              <td className="text-right font-mono text-emerald-400">{Math.round((row.confidence <= 1 ? row.confidence * 100 : row.confidence))}%</td>
+              <td className="text-right"><ConfidenceBar confidence={row.confidence} /></td>
               <td className="text-right">
                 <Badge tone={row.result === 'correct' ? 'emerald' : row.result === 'wrong' ? 'rose' : 'green'}>
                   {row.result ? row.result.toUpperCase() : 'PENDING'}
@@ -287,7 +315,7 @@ function TopSignalsTable({ data, onOpen }) {
   );
 }
 
-function RankedStocksList({ data, onOpen }) {
+function RankedStocksList({ data, onOpen, isMovers = true }) {
   return (
     <div className="flex flex-col gap-1.5">
       {data.slice(0, 10).map((row, i) => (
@@ -295,7 +323,10 @@ function RankedStocksList({ data, onOpen }) {
           <span className="text-[10px] text-slate-600 w-4 font-mono">{i + 1}</span>
           <span className="text-xs font-mono text-slate-200 w-24 group-hover:text-emerald-400 shrink-0">{row.symbol}</span>
           <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full" style={{ width: `${Math.min(100, Math.max(0, (row.change_pct + 10) * 5))}%` }} />
+            <div
+              className={`h-full rounded-full ${isMovers ? 'bg-gradient-to-r from-emerald-600 to-emerald-400' : 'bg-gradient-to-r from-rose-600 to-rose-400'}`}
+              style={{ width: `${Math.min(100, Math.max(0, isMovers ? (row.change_pct + 10) * 5 : Math.abs(row.change_pct) * 10))}%` }}
+            />
           </div>
           <span className={`text-[10px] font-mono w-10 text-right ${clr(row.change_pct)}`}>{fmtPct(row.change_pct)}</span>
         </button>
@@ -385,14 +416,14 @@ function AccuracySummary({ metrics }) {
 }
 
 function ModelHealth({ health }) {
-  const modelHealth = health.find(h => h.name === "ML Models");
-  const modelsList = modelHealth ? modelHealth.message.split(", ") : [];
+  const modelHealth = health.find(h => h.name?.toLowerCase() === "ml models" || h.name?.toLowerCase() === "ml_models" || h.name?.toLowerCase() === "mlmodels");
+  const modelsList = modelHealth && modelHealth.status !== 'unhealthy' ? modelHealth.message.split(", ") : [];
 
   return (
     <div className="grid grid-cols-1 gap-1.5">
-      {modelsList.length > 0 ? (
+      {modelsList.length > 0 && modelsList[0] !== "None" ? (
         modelsList.map((m) => (
-          <div key={m} className="flex items-center justify-between px-2 py-1.5 rounded bg-slate-800/40">
+          <div key={m} className="flex items-center justify-between px-2 py-1.5 rounded bg-slate-800/40 border border-slate-800/50">
             <div className="flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               <span className="text-[11px] text-slate-200 font-mono truncate max-w-[150px]" title={m}>{m}</span>
@@ -401,44 +432,214 @@ function ModelHealth({ health }) {
           </div>
         ))
       ) : (
-        <div className="text-slate-500 text-[11px] py-4 text-center">No active models found. Run training script.</div>
+        <div className="text-slate-500 text-[11px] py-4 text-center font-mono">
+          {modelHealth ? modelHealth.message : "No active models found. Run training script."}
+        </div>
       )}
     </div>
   );
 }
 
-function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, onOpen }) {
+function FiiDiiWidget({ fiiDii }) {
+  if (!fiiDii || !fiiDii.daily_activity) {
+    return <div className="text-slate-500 text-[11px] py-4 text-center font-mono">FII/DII activity data loading...</div>;
+  }
+  const act = fiiDii.daily_activity;
+  const tr = fiiDii.flow_trend;
+  
+  const formatCr = (val) => {
+    if (val === null || val === undefined) return "—";
+    const prefix = val >= 0 ? "+" : "";
+    return `${prefix}${val.toFixed(1)} Cr`;
+  };
+  
+  const getColorClass = (val) => {
+    if (!val) return "text-slate-400 font-mono";
+    return val >= 0 ? "text-emerald-400 font-mono font-semibold" : "text-rose-400 font-mono font-semibold";
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold border-b border-slate-800 pb-1 flex justify-between">
+        <span>Daily Net (Cash Segment)</span>
+        <span className="font-mono text-slate-500">{act.date}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 py-1">
+        <div className="flex justify-between items-center text-xs">
+          <span className="text-slate-400">FII Cash Net</span>
+          <span className={getColorClass(act.fii_cash_net_cr)}>{formatCr(act.fii_cash_net_cr)}</span>
+        </div>
+        <div className="flex justify-between items-center text-xs">
+          <span className="text-slate-400">DII Cash Net</span>
+          <span className={getColorClass(act.dii_cash_net_cr)}>{formatCr(act.dii_cash_net_cr)}</span>
+        </div>
+        <div className="flex justify-between items-center text-xs col-span-2 border-t border-slate-900 pt-1.5">
+          <span className="text-slate-400">Net Daily Flow</span>
+          <span className={getColorClass(act.net_flow_cr)}>{formatCr(act.net_flow_cr)}</span>
+        </div>
+      </div>
+      
+      <div className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold border-t border-b border-slate-800 py-1 flex justify-between mt-1">
+        <span>Flow Trend (20D Avg)</span>
+        <Badge tone={tr.fii_flow_trend === 'BUYING' ? 'emerald' : tr.fii_flow_trend === 'SELLING' ? 'rose' : 'slate'}>
+          {tr.fii_flow_trend || 'NEUTRAL'}
+        </Badge>
+      </div>
+      <div className="grid grid-cols-2 gap-3 py-1">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[9px] uppercase tracking-wide text-slate-500">Avg FII Flow</span>
+          <span className={`text-xs ${getColorClass(tr.avg_daily_fii_flow_cr)}`}>
+            {formatCr(tr.avg_daily_fii_flow_cr)}/day
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[9px] uppercase tracking-wide text-slate-500">Avg DII Flow</span>
+          <span className={`text-xs ${getColorClass(tr.avg_daily_dii_flow_cr)}`}>
+            {formatCr(tr.avg_daily_dii_flow_cr)}/day
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, fiiDii, topLosers, onOpen }) {
   const buySignals = useMemo(() => {
     return predictions.filter(p => p.prediction === 'BUY' || p.prediction === 'LONG');
   }, [predictions]);
+
+  const topMovers = useMemo(() => {
+    return [...stocks]
+      .filter(s => s.change_pct > 0)
+      .sort((a, b) => b.change_pct - a.change_pct);
+  }, [stocks]);
 
   return (
     <div className="grid grid-cols-12 gap-4 animate-fade-in">
       <Card title="Latest Buy Signals" className="col-span-8 row-span-2">
         <TopSignalsTable data={buySignals} onOpen={onOpen} />
       </Card>
-      <Card title="Top Movers (Chg%)" className="col-span-4 row-span-2">
-        <RankedStocksList data={stocks} onOpen={onOpen} />
+      <Card title="Top Movers (Chg%)" className="col-span-4">
+        <RankedStocksList data={topMovers} onOpen={onOpen} isMovers={true} />
+      </Card>
+      <Card title="Top Losers (Chg%)" className="col-span-4">
+        <RankedStocksList data={topLosers} onOpen={onOpen} isMovers={false} />
       </Card>
 
-      <Card title="Prediction Performance" className="col-span-4"><AccuracySummary metrics={metrics} /></Card>
-      <Card title="Market Breadth" className="col-span-4"><MarketBreadth breadth={breadth} /></Card>
-      <Card title="Model Registry Status" className="col-span-4"><ModelHealth health={health} /></Card>
+      <Card title="FII / DII Institutional Flows" className="col-span-4">
+        <FiiDiiWidget fiiDii={fiiDii} />
+      </Card>
+      <Card title="Confidence Density" className="col-span-4">
+        <ProbabilityDistribution data={predictions} />
+      </Card>
+      <Card title="Sector Heatmap" className="col-span-4">
+        <SectorHeatmap sectors={sectors} />
+      </Card>
 
-      <Card title="Confidence Density" className="col-span-4"><ProbabilityDistribution data={predictions} /></Card>
-      <Card title="Sector Heatmap" className="col-span-4"><SectorHeatmap sectors={sectors} /></Card>
-      <Card title="System Components Health" className="col-span-4">
-        <div className="flex flex-col gap-1.5 text-[11px]">
-          {health.map((h) => (
-            <div key={h.name} className="flex items-center justify-between">
-              <span className="text-slate-400 font-medium">{h.name}</span>
-              <Badge tone={h.status === 'healthy' ? 'emerald' : h.status === 'degraded' ? 'green' : 'rose'}>
-                {h.value}
-              </Badge>
-            </div>
-          ))}
+      <Card title="Prediction Performance" className="col-span-4">
+        <AccuracySummary metrics={metrics} />
+      </Card>
+      <Card title="Market Breadth" className="col-span-4">
+        <MarketBreadth breadth={breadth} />
+      </Card>
+      <Card title="Model Registry Status" className="col-span-4">
+        <ModelHealth health={health} />
+      </Card>
+    </div>
+  );
+}
+
+function SystemHealthPage({ health }) {
+  const counts = useMemo(() => {
+    let healthy = 0, degraded = 0, unhealthy = 0;
+    health.forEach(h => {
+      if (h.status === 'healthy') healthy++;
+      else if (h.status === 'degraded') degraded++;
+      else unhealthy++;
+    });
+    return { healthy, degraded, unhealthy };
+  }, [health]);
+
+  return (
+    <div className="flex flex-col gap-5 animate-fade-in">
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex items-center justify-between">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] uppercase tracking-wide text-slate-500">Healthy Components</span>
+            <span className="text-xl font-mono font-bold text-emerald-400">{counts.healthy}</span>
+          </div>
+          <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+            <CircleDot size={18} />
+          </div>
         </div>
-      </Card>
+        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex items-center justify-between">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] uppercase tracking-wide text-slate-500">Degraded Components</span>
+            <span className="text-xl font-mono font-bold text-cyan-400">{counts.degraded}</span>
+          </div>
+          <div className="w-8 h-8 rounded-full bg-cyan-500/10 flex items-center justify-center text-cyan-400">
+            <Activity size={18} />
+          </div>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex items-center justify-between">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] uppercase tracking-wide text-slate-500">Unhealthy Components</span>
+            <span className="text-xl font-mono font-bold text-rose-400">{counts.unhealthy}</span>
+          </div>
+          <div className="w-8 h-8 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-400">
+            <ShieldAlert size={18} />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        {health.map((h) => {
+          const isModels = h.name.toLowerCase() === "ml models" || h.name.toLowerCase() === "ml_models" || h.name.toLowerCase() === "mlmodels";
+          
+          return (
+            <div key={h.name} className="bg-slate-900 border border-slate-800 rounded-lg p-4 flex flex-col gap-3">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <span className="text-xs font-bold text-slate-200 uppercase tracking-wide">{h.name}</span>
+                <Badge tone={h.status === 'healthy' ? 'emerald' : h.status === 'degraded' ? 'cyan' : 'rose'}>
+                  {h.status.toUpperCase()}
+                </Badge>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase">Latency / Speed</span>
+                  <span className="font-mono text-slate-300">{h.value || "N/A"}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block text-[10px] uppercase">Message</span>
+                  <span className="text-slate-300 font-mono text-[11px] leading-tight block">{h.message}</span>
+                </div>
+              </div>
+
+              {isModels && h.details?.slots && (
+                <div className="mt-2 border-t border-slate-800 pt-3">
+                  <span className="text-slate-500 block text-[10px] uppercase mb-2">Model Slot Registration</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    {Object.entries(h.details.slots).map(([slot, slotStatus]) => {
+                      const isActive = slotStatus.includes("active");
+                      return (
+                        <div key={slot} className="flex items-center justify-between p-1.5 rounded bg-slate-950 border border-slate-800/60">
+                          <span className="text-[10px] font-mono text-slate-400 truncate max-w-[120px] capitalize" title={slot}>
+                            {slot.replace("_", " ")}
+                          </span>
+                          <Badge tone={isActive ? "emerald" : "rose"}>
+                            {slotStatus.toUpperCase()}
+                          </Badge>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -459,8 +660,8 @@ function LiveSignals({ predictions, onOpen }) {
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
-      const tA = new Date(a.prediction_date || a.prediction_time || a.created_at).getTime();
-      const tB = new Date(b.prediction_date || b.prediction_time || b.created_at).getTime();
+      const tA = new Date(a.date || a.prediction_date || a.prediction_time || a.created_at).getTime();
+      const tB = new Date(b.date || b.prediction_date || b.prediction_time || b.created_at).getTime();
       if (sortKey === "time") return tB - tA;
       if (sortKey === "prob") return b.confidence - a.confidence;
       if (sortKey === "score") return b.confidence - a.confidence;
@@ -511,14 +712,14 @@ function LiveSignals({ predictions, onOpen }) {
               )}
               {sorted.map((row) => (
                 <tr key={row.id} onClick={() => onOpen(row.symbol)} className="border-b border-slate-900 hover:bg-slate-800/50 cursor-pointer">
-                  <td className="py-2 font-mono text-slate-500">{(row.prediction_date || row.prediction_time || '').replace('T', ' ').slice(5, 19)}</td>
+                  <td className="py-2 font-mono text-slate-500">{(row.date || row.prediction_date || row.prediction_time || '').replace('T', ' ').slice(5, 19)}</td>
                   <td className="py-2 font-mono text-slate-100 font-medium">{row.symbol}</td>
                   <td className="py-2"><span className={`chip font-bold text-[10px] px-1 py-0.5 rounded ${row.prediction === 'BUY' || row.prediction === 'LONG' ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-400'}`}>{row.prediction}</span></td>
                   <td className="py-2 text-slate-400 text-[10px] font-mono">{row.horizon}</td>
                   <td className="py-2 text-right font-mono text-slate-300">{fmtINR(row.entry_price)}</td>
                   <td className="py-2 text-right font-mono text-rose-400">{fmtINR(row.stop_loss)}</td>
                   <td className="py-2 text-right font-mono text-emerald-400">{fmtINR(row.target_price)}</td>
-                  <td className="py-2 text-right font-mono text-emerald-400">{Math.round(row.confidence <= 1 ? row.confidence * 100 : row.confidence)}%</td>
+                  <td className="py-2 text-right"><ConfidenceBar confidence={row.confidence} /></td>
                   <td className="py-2 text-right font-mono text-slate-400">
                     <Badge tone={row.result === 'correct' ? 'emerald' : row.result === 'wrong' ? 'rose' : 'slate'}>
                       {row.result ? row.result.toUpperCase() : 'PENDING'}
@@ -1073,6 +1274,7 @@ export default function QuantTerminal() {
   const [predictions, setPredictions] = useState([]);
   const [indices, setIndices] = useState([]);
   const [health, setHealth] = useState([]);
+  const [fiiDii, setFiiDii] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Sorting state for stocks table
@@ -1083,17 +1285,19 @@ export default function QuantTerminal() {
 
   const fetchAllData = useCallback(async () => {
     try {
-      const [stocksRes, predRes, healthRes, indicesRes] = await Promise.all([
+      const [stocksRes, predRes, healthRes, indicesRes, fiiDiiRes] = await Promise.all([
         fetch(`${API_BASE}/stocks`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/predictions?limit=1000`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/health/status`).then(r => r.ok ? r.json() : []),
-        fetch(`${API_BASE}/indices`).then(r => r.ok ? r.json() : [])
+        fetch(`${API_BASE}/indices`).then(r => r.ok ? r.json() : []),
+        fetch(`${API_BASE}/institutional/fii_dii`).then(r => r.ok ? r.json() : null)
       ]);
 
       setStocks(stocksRes || []);
       setPredictions(predRes || []);
       setHealth(healthRes || []);
       setIndices(indicesRes || []);
+      setFiiDii(fiiDiiRes || null);
     } catch (e) {
       console.error("Failed to fetch dashboard data:", e);
     } finally {
@@ -1130,6 +1334,12 @@ export default function QuantTerminal() {
     const advances = stocks.filter(s => s.change_pct > 0).length;
     const declines = stocks.filter(s => s.change_pct < 0).length;
     return { advances, declines };
+  }, [stocks]);
+
+  const topLosers = useMemo(() => {
+    return [...stocks]
+      .filter(s => s.change_pct < 0)
+      .sort((a, b) => a.change_pct - b.change_pct);
   }, [stocks]);
 
   const metrics = useMemo(() => {
@@ -1222,10 +1432,13 @@ export default function QuantTerminal() {
                   sectors={sectors}
                   breadth={breadth}
                   metrics={metrics}
+                  fiiDii={fiiDii}
+                  topLosers={topLosers}
                   onOpen={openStock}
                 />
               )}
               {page === "live-signals" && <LiveSignals predictions={predictions} onOpen={openStock} />}
+              {page === "system-health" && <SystemHealthPage health={health} />}
               {page === "stock-detail" && (
                 <div className="grid grid-cols-12 gap-6">
                   {/* Left Side stock selector grid */}

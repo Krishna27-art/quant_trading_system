@@ -30,8 +30,7 @@ from typing import Any
 
 from data_platform.pipelines.long_term_investing_scorer import (
     LongTermInvestingScorer,
-    LongTermInvestingScore,
-    StructuralTheme
+    LongTermInvestingScore
 )
 from utils.logger import get_logger
 

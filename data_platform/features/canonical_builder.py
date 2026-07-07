@@ -8,9 +8,7 @@ and prevents lookahead bias.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 import numpy as np
 import pandas as pd
 
@@ -162,7 +160,16 @@ class CanonicalFeatureBuilder:
             short_vol = close.pct_change().rolling(20).std()
             long_vol = close.pct_change().rolling(100).std()
             out["vol_ratio"] = short_vol / long_vol.replace(0, np.nan)
-            rolling_max = close.rolling(52).max()
+            # price_to_52w_high: 52 weeks = 260 trading days for daily bars,
+            # 52 bars for weekly/longer bars (LONGTERM timeframe is weekly).
+            # Detect bar frequency from the index: if median gap < 5 days, treat as daily.
+            if isinstance(df.index, pd.DatetimeIndex) and len(df.index) > 1:
+                median_gap_days = pd.Series(df.index).diff().dt.days.median()
+                _52w_window = 260 if (median_gap_days is not None and median_gap_days < 5) else 52
+            else:
+                _52w_window = 52  # Default: assume weekly bars (LONGTERM use case)
+            rolling_max = close.rolling(_52w_window).max()
+
             out["price_to_52w_high"] = close / rolling_max.replace(0, np.nan)
             out["pe_ratio"] = _get_extra_col("pe_ratio", 20.0)
             out["debt_to_equity"] = _get_extra_col("debt_to_equity", 0.5)

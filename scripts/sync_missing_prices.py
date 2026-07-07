@@ -9,7 +9,6 @@ the database with the current NSE_UNIVERSE configuration.
 import sys
 from pathlib import Path
 
-import pandas as pd
 import yfinance as yf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

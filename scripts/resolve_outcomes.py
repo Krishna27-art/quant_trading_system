@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pandas as pd
 import yfinance as yf
@@ -13,8 +13,10 @@ from database.db_sync import SessionLocal
 from database.models import Prediction
 from prediction_intelligence.calibration import fit_calibrator
 from utils.logger import get_logger
+from validation.prediction_store import PredictionStore
 
 logger = get_logger("outcome_resolver")
+_store = PredictionStore()
 
 # Minimum resolved predictions per timeframe before calibration is triggered
 CALIBRATION_MIN_SAMPLES = 100
@@ -243,22 +245,53 @@ def _resolve_single(pred: Prediction) -> bool:
         mfe_val = (entry - min_low) / entry
         mae_val = (max_high - entry) / entry
 
-    # ── write back to model ─────────────────────────────────────────────────
-    # Use only columns that exist in database/models.py
-    pred.outcome        = outcome                          # → actual_outcome
-    pred.actual_return  = round(actual_ret, 6)             # fraction, e.g. 0.023
-    pred.target_hit     = outcome == "WIN"
-    pred.stop_hit       = outcome == "LOSS"
-    pred.is_correct     = outcome == "WIN"
-    pred.mfe            = round(mfe_val, 6)
-    pred.mae            = round(mae_val, 6)
+    # ── write back via PredictionStore ─────────────────────────────────────
+    # hold_bars: count bars actually traversed (already known from the loop above)
+    n_bars_traversed = len(bars_traversed)
+
+    outcome_fields = {
+        "actual_outcome": outcome,
+        "actual_return":  round(actual_ret, 6),
+        "target_hit":     outcome == "WIN",
+        "stop_hit":       outcome == "LOSS",
+        "is_correct":     outcome == "WIN",
+        "mfe":            round(mfe_val, 6),
+        "mae":            round(mae_val, 6),
+        "exit_time":      exit_time if isinstance(exit_time, datetime) else pd.Timestamp(exit_time).to_pydatetime(),
+        "hold_bars":      n_bars_traversed,
+    }
+
+    resolved = _store.resolve(pred.id, outcome_fields, db=_get_session(pred))
+    if not resolved:
+        # Fallback: write directly if store failed (e.g. already resolved)
+        pred.outcome       = outcome
+        pred.actual_return = round(actual_ret, 6)
+        pred.target_hit    = outcome == "WIN"
+        pred.stop_hit      = outcome == "LOSS"
+        pred.is_correct    = outcome == "WIN"
+        pred.mfe           = round(mfe_val, 6)
+        pred.mae           = round(mae_val, 6)
+        pred.hold_bars     = n_bars_traversed
+        if hasattr(pred, "exit_time"):
+            pred.exit_time = exit_time if isinstance(exit_time, datetime) else pd.Timestamp(exit_time).to_pydatetime()
 
     logger.info(
         f"Resolved {sym} | {timeframe} | {direction} | {outcome} | "
         f"entry={entry:.2f} exit={exit_price:.2f} ret={actual_ret * 100:.2f}% | "
-        f"MFE={mfe_val * 100:.2f}% MAE={mae_val * 100:.2f}%"
+        f"MFE={mfe_val * 100:.2f}% MAE={mae_val * 100:.2f}% bars={n_bars_traversed}"
     )
     return True
+
+
+# Session helper — resolve_single receives ORM objects from the outer session;
+# we need the same session to call PredictionStore.resolve() correctly.
+# We attach the session via the ORM's identity map.
+def _get_session(pred: Prediction) -> Session:
+    from sqlalchemy.orm import object_session
+    sess = object_session(pred)
+    if sess is None:
+        raise RuntimeError(f"Prediction {pred.id} is detached from its session.")
+    return sess
 
 
 # ---------------------------------------------------------------------------

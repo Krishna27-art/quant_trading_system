@@ -9,7 +9,6 @@ This module replaces the deleted QuantResearchOS.ml.inference.calibration.
 
 from __future__ import annotations
 
-from typing import Optional
 
 import numpy as np
 from sklearn.calibration import CalibratedClassifierCV

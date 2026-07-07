@@ -90,7 +90,7 @@ class EquityHistoryPipeline:
             if df is None or df.empty:
                 raise ValueError(f"No data returned for symbol {self.config.symbol}")
 
-            logger.info(f"Downloaded {len(df)} records from {result.source}")
+            logger.info(f"Downloaded {len(df)} records from {"nselib"}")
             logger.info(f"DataFrame shape: {df.shape}")
             logger.info(f"Columns: {df.columns.tolist()}")
             logger.info(f"Latency: {result.latency_ms}ms")
@@ -100,7 +100,7 @@ class EquityHistoryPipeline:
             try:
                 self.raw_bronze.store_raw_response(
                     dataset=dataset_name,
-                    source=result.source,
+                    source="nselib",
                     raw_data=df,
                     metadata=result.metadata,
                 )
@@ -112,12 +112,12 @@ class EquityHistoryPipeline:
             try:
                 self.lineage.record_ingestion(
                     dataset=dataset_name,
-                    source=result.source,
+                    source="nselib",
                     success=result.success,
                     latency_ms=result.latency_ms,
                     metadata=result.metadata,
                     error=result.error,
-                    fallback_used=(result.source != "nselib"),
+                    fallback_used=("nselib" != "nselib"),
                 )
             except Exception as e:
                 logger.warning(f"Failed to record lineage: {str(e)}")
@@ -207,10 +207,10 @@ class EquityHistoryPipeline:
             df, validation_metadata = validate_at_ingestion(
                 df=df.reset_index(),  # Reset index for validation
                 dataset_name=f"equity_history_{self.config.symbol}",
-                source=result.source,
+                source="nselib",
             )
             # Inject degraded flag if fallback was used
-            validation_metadata["degraded"] = (result.source != "nselib")
+            validation_metadata["degraded"] = ("nselib" != "nselib")
 
             # Check if validation passed
             if not validation_metadata["validation_passed"]:
@@ -226,7 +226,7 @@ class EquityHistoryPipeline:
             df = df.set_index("date")
 
             # Append is_degraded flag so fallback data is queryable in downstream stores
-            df["is_degraded"] = (result.source != "nselib")
+            df["is_degraded"] = ("nselib" != "nselib")
 
             return df
 
@@ -314,8 +314,8 @@ class EquityHistoryPipeline:
                 "symbol": self.config.symbol,
                 "from_date": self.config.from_date,
                 "to_date": self.config.to_date,
-                "source": result.source,
-                "degraded": (result.source != "nselib"),
+                "source": "nselib",
+                "degraded": ("nselib" != "nselib"),
                 "partitioned": True,
             }
 
@@ -330,7 +330,7 @@ class EquityHistoryPipeline:
             checksum = compute_checksum(df)
             write_lineage_record(
                 dataset=f"{self.config.symbol}_equity_history",
-                source=result.source,
+                source="nselib",
                 row_count=len(df),
                 checksum=checksum,
             )

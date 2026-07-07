@@ -77,8 +77,22 @@ echo "Starting Frontend UI on port 3000..."
 python -m http.server 3000 --directory frontend/dist > logs/frontend.log 2>&1 &
 FRONTEND_PID=$!
 
+# Run prediction outcome resolver once immediately on startup
+echo "Running initial prediction outcome resolver..."
+python scripts/resolve_outcomes.py > logs/outcome_resolver.log 2>&1 || true
+
+# Start Outcome Resolver loop in background (runs every hour to evaluate predictions)
+(
+  while true; do
+    sleep 3600
+    echo "Running prediction outcome resolver..."
+    python scripts/resolve_outcomes.py >> logs/outcome_resolver.log 2>&1 || true
+  done
+) &
+RESOLVER_PID=$!
+
 # Cleanup trap to kill background processes on Exit
-trap "echo ''; echo 'Shutting down servers...'; kill $API_PID $FRONTEND_PID 2>/dev/null || true; exit" INT TERM EXIT
+trap "echo ''; echo 'Shutting down servers...'; kill $API_PID $FRONTEND_PID $RESOLVER_PID 2>/dev/null || true; exit" INT TERM EXIT
 
 echo ""
 echo "--------------------------------------------------"
@@ -87,6 +101,7 @@ echo "Backend API:  http://localhost:8000"
 echo "Frontend UI:  http://localhost:3000"
 echo "Backend Logs:  logs/backend.log"
 echo "Frontend Logs: logs/frontend.log"
+echo "Resolver Logs: logs/outcome_resolver.log"
 echo "Press Ctrl+C to stop all servers and exit."
 echo "--------------------------------------------------"
 echo ""

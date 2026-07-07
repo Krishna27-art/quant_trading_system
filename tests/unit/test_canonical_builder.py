@@ -4,12 +4,10 @@ Verifies deterministic feature calculation and fail-closed validation.
 """
 import numpy as np
 import pandas as pd
-import pytest
 from data_platform.features.canonical_builder import (
     CanonicalFeatureBuilder,
     INTRADAY_FEATURES,
     SWING_FEATURES,
-    LONGTERM_FEATURES,
 )
 from data_platform.feature_store.macro import extract_historical_macro
 

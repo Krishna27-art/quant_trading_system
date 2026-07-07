@@ -5,11 +5,9 @@ Central registry for all prediction models.
 Manages model lifecycle: registration, loading, versioning, and retrieval.
 """
 
-from typing import Dict, Optional, Type
-import os
+from typing import Dict, Type
 import json
 from pathlib import Path
-from datetime import datetime
 from .base_model import BaseModel, ModelMetadata
 
 

@@ -48,7 +48,6 @@ class BaseModel(ABC):
             X: Feature matrix of shape (n_samples, n_features)
             y: Target labels (0=SELL, 1=HOLD, 2=BUY or similar encoding)
         """
-        pass
     
     @abstractmethod
     def predict(self, X: np.ndarray) -> np.ndarray:
@@ -61,7 +60,6 @@ class BaseModel(ABC):
         Returns:
             Predictions array of shape (n_samples,)
         """
-        pass
     
     @abstractmethod
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
@@ -74,7 +72,6 @@ class BaseModel(ABC):
         Returns:
             Probability array of shape (n_samples, n_classes)
         """
-        pass
     
     @abstractmethod
     def save(self, path: str) -> None:
@@ -84,7 +81,6 @@ class BaseModel(ABC):
         Args:
             path: File path to save the model
         """
-        pass
     
     @abstractmethod
     def load(self, path: str) -> None:
@@ -94,7 +90,6 @@ class BaseModel(ABC):
         Args:
             path: File path to load the model from
         """
-        pass
     
     def get_feature_importance(self) -> Dict[str, float]:
         """

@@ -18,7 +18,6 @@ class BaseLSTM:
     def train(self, X_train: pd.DataFrame, y_train: pd.Series, feature_cols: list[str]):
         # PyTorch DataLoaders and nn.LSTM training loop goes here
         self.is_trained = True
-        pass
 
     def predict_proba(self, X_test: pd.DataFrame) -> np.ndarray:
         # Return a neutral 50% probability array matching the length of X_test

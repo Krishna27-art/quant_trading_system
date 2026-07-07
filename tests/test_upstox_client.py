@@ -1,4 +1,3 @@
-import unittest.mock as mock
 from data_platform.upstox_client import compute_pcr_from_chain
 from utils.upstox_helper import get_instrument_key
 

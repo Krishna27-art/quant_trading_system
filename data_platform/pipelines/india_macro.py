@@ -1,7 +1,6 @@
 import os
 import requests
 import pandas as pd
-from typing import Optional
 
 from utils.logger import get_logger
 

@@ -5,7 +5,7 @@ Combines multiple models into a meta-learner.
 Implements stacking ensemble for improved prediction accuracy.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 import numpy as np
 from sklearn.ensemble import StackingClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression

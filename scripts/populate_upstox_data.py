@@ -5,7 +5,6 @@ Populate database with real market data from Upstox API
 
 import os
 import sys
-from datetime import datetime
 from dotenv import load_dotenv
 
 # Load environment variables FIRST before any imports
@@ -14,7 +13,7 @@ load_dotenv()
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.connection import execute_query, get_connection
+from database.connection import get_connection
 from data_platform.upstox_client import get_instrument_map
 from utils.logger import get_logger
 

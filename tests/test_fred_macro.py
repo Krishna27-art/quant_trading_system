@@ -1,5 +1,4 @@
 import unittest.mock as mock
-import pandas as pd
 from data_platform.pipelines.india_macro import get_macro_indicators
 from data_platform.pipelines.macro_fred import FREDDataPipeline
 

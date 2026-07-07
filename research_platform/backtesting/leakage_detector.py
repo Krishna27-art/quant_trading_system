@@ -6,8 +6,6 @@ Identifies potential lookahead bias and data leakage in predictions.
 import pandas as pd
 from typing import Any
 from utils.logger import get_logger
-from scipy.stats import spearmanr
-import numpy as np
 
 logger = get_logger("leakage_detector")
 

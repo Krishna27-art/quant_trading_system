@@ -8,8 +8,9 @@ Generates entry price, stop loss, targets, and confidence metrics.
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime
-import numpy as np
 from enum import Enum
+
+from utils.time_utils import now_ist
 
 
 class SignalDirection(Enum):
@@ -171,7 +172,7 @@ class SignalGenerator:
             model_version=model_version,
             feature_version=feature_version,
             dataset_version=dataset_version,
-            timestamp=datetime.now()
+            timestamp=now_ist()
         )
     
     def _generate_hold_signal(
@@ -214,7 +215,7 @@ class SignalGenerator:
             model_version=model_version,
             feature_version=feature_version,
             dataset_version=dataset_version,
-            timestamp=datetime.now()
+            timestamp=now_ist()
         )
     
     def _generate_reasons(

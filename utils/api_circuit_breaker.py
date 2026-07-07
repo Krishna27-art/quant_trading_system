@@ -167,7 +167,6 @@ class CircuitBreaker:
 class CircuitBreakerOpenError(Exception):
     """Raised when circuit breaker is in OPEN state."""
 
-    pass
 
 
 def exponential_backoff(

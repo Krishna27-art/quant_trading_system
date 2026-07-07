@@ -352,6 +352,8 @@ def create_tables():
             symbol TEXT NOT NULL,
             model_version TEXT,
             feature_version TEXT,
+            feature_snapshot TEXT,
+            feature_schema_version TEXT,
             features_used TEXT,
             prediction TEXT NOT NULL,
             horizon TEXT NOT NULL,
@@ -368,6 +370,8 @@ def create_tables():
             actual_return REAL,
             mfe REAL,
             mae REAL,
+            exit_time TIMESTAMPTZ,
+            hold_bars INTEGER,
             latency_ms INTEGER,
             is_correct INTEGER,
             regime TEXT,
@@ -536,6 +540,30 @@ def create_tables():
     # Run migration to add expected_return column if it doesn't exist
     try:
         execute_write("ALTER TABLE predictions ADD COLUMN expected_return REAL")
+    except Exception:
+        pass
+
+    # Run migration to add feature_snapshot column if it doesn't exist
+    try:
+        execute_write("ALTER TABLE predictions ADD COLUMN feature_snapshot TEXT")
+    except Exception:
+        pass
+
+    # Run migration to add feature_schema_version column if it doesn't exist
+    try:
+        execute_write("ALTER TABLE predictions ADD COLUMN feature_schema_version TEXT")
+    except Exception:
+        pass
+
+    # Run migration to add exit_time column if it doesn't exist
+    try:
+        execute_write("ALTER TABLE predictions ADD COLUMN exit_time TIMESTAMPTZ")
+    except Exception:
+        pass
+
+    # Run migration to add hold_bars column if it doesn't exist
+    try:
+        execute_write("ALTER TABLE predictions ADD COLUMN hold_bars INTEGER")
     except Exception:
         pass
 

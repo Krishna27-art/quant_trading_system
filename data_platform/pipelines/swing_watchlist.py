@@ -28,9 +28,9 @@ Institutional workflow:
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
-from data_platform.pipelines.base_formation_detector import BaseFormationDetector, BaseMetrics
+from data_platform.pipelines.base_formation_detector import BaseFormationDetector
 from data_platform.pipelines.swing_trading_scorer import (
     SwingTradingScorer,
     SwingTradingScore,

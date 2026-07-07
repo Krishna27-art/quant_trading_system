@@ -31,7 +31,7 @@ import yfinance as yf
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from database.db_sync import SessionLocal
-from database.models import IndexTick, Prediction, Tick
+from database.models import IndexTick, Prediction
 from data_platform.feature_store.macro import extract_macro_features
 from prediction_intelligence.base_logistic import (
     INTRADAY_FEATURES, 
@@ -47,11 +47,15 @@ from prediction_intelligence.signal_adapter import SignalPrediction
 _registry = ModelRegistry()
 from risk_governance.pre_trade.circuit_breakers import CircuitBreaker
 from risk_governance.pre_trade.portfolio_risk import PortfolioRiskEngine
-from risk_governance.pre_trade.historical_var import HistoricalVaR
 from utils.logger import get_logger
 from utils.time_utils import now_ist
 
 logger = get_logger("live_predictions")
+
+from validation.prediction_record import PredictionRecord
+from validation.prediction_store import PredictionStore
+_store = PredictionStore()
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -804,25 +808,35 @@ def run():
                 except Exception as ex:
                     logger.error(f"Error running idempotency guard check: {ex}")
 
-                # Save new prediction (synthetic Tick insert removed!)
-                db.add(Prediction(
-                    id=str(uuid.uuid4()),
-                    symbol=sig.symbol,
-                    horizon=sig.metadata["timeframe"],
-                    prediction="BUY" if sig.prediction == 2 else "SELL",
-                    entry_price=sig.metadata["entry_price"],
-                    stop_loss=sig.stop_loss,
-                    target_price=sig.target_price,
-                    confidence=sig.win_probability,
-                    expected_return=sig.expected_return,
-                    model_version=sig.model_version,
-                    feature_version=sig.metadata["feature_version"],
-                    features_used=sig.metadata["features_json"],
-                    reason=sig.metadata["reason"],
-                    actual_outcome="OPEN",
-                    prediction_time=now,
-                    expiry_time=_expiry_time(sig.metadata["timeframe"], now),
-                ))
+                # Safely parse features snapshot JSON
+                try:
+                    feat_snapshot = json.loads(sig.metadata["features_json"])
+                except Exception:
+                    feat_snapshot = {"error": "could not parse features_json"}
+
+                try:
+                    record = PredictionRecord(
+                        symbol=sig.symbol,
+                        prediction_time=now,
+                        model_version=sig.model_version,
+                        feature_schema_version=sig.metadata["feature_version"],
+                        feature_snapshot=feat_snapshot,
+                        direction="BUY" if sig.prediction == 2 else "SELL",
+                        timeframe=sig.metadata["timeframe"],
+                        win_probability=sig.win_probability,
+                        confidence=sig.win_probability,
+                        expected_return=sig.expected_return,
+                        regime=feat_snapshot.get("market_regime"),
+                        reason=sig.metadata["reason"],
+                        entry_price=sig.metadata["entry_price"],
+                        stop_loss=sig.stop_loss,
+                        target_price=sig.target_price,
+                        expiry_time=_expiry_time(sig.metadata["timeframe"], now),
+                    )
+                    _store.store(record, db)
+                except Exception as ex:
+                    logger.error(f"Prediction validation failed for {sig.symbol}: {ex}")
+
 
             db.commit()
             logger.info(f"Committed {len(preds)} predictions for timeframe {timeframe} to database.")

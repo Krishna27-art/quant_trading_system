@@ -491,7 +491,6 @@ class ExecutionEngine(ABC):
         Returns:
             List of fills
         """
-        pass
 
     def calculate_slippage(
         self, order: Order, market_price: float, volatility: float, spread: float

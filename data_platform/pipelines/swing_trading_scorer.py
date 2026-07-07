@@ -29,12 +29,10 @@ Institutional workflow:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
-import numpy as np
-import pandas as pd
 
 from config.universe import NSE_UNIVERSE
 from utils.logger import get_logger

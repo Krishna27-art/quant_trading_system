@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import synonym
 
@@ -12,7 +12,13 @@ class Prediction(Base):
     symbol = Column(String(20), nullable=False)
     model_version = Column(String(50))
     feature_version = Column(String(50))
-    features_used = Column("features_used", Text)
+    # Full JSON snapshot of every feature value used at prediction time.
+    # Stored inline (avg ~2 KB). Required for post-hoc audits and reproducibility.
+    feature_snapshot = Column(Text)
+    # Canonical feature schema version tag (e.g. "v2.1").
+    # Lets us track which feature set a saved model was trained on.
+    feature_schema_version = Column(String(20))
+    features_used = Column("features_used", Text)     # kept for legacy compat
     prediction = Column("prediction", String(20), nullable=False)
     horizon = Column("horizon", String(20), nullable=False)
     confidence = Column("confidence", Numeric(6, 4))
@@ -28,10 +34,23 @@ class Prediction(Base):
     actual_return = Column(Numeric(10, 4))
     mfe = Column(Numeric(10, 4))
     mae = Column(Numeric(10, 4))
+    # Timestamp when the trade was resolved (SL/target hit or timeout).
+    exit_time = Column(DateTime)
+    # Number of bars from entry to exit (for duration analysis).
+    hold_bars = Column(Integer)
     latency_ms = Column(Integer)
     is_correct = Column(Boolean)
     regime = Column(String(50))
     reason = Column(Text)
+
+    # Uniqueness constraint: one prediction per (symbol, timestamp, model).
+    # Prevents duplicate rows when the pipeline reruns on the same bar.
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol", "prediction_time", "model_version",
+            name="uq_prediction_symbol_time_model",
+        ),
+    )
 
     # SQLAlchemy synonyms to map the attributes accessed in scripts
     generated_at = synonym("prediction_time")

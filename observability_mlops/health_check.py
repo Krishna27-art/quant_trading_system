@@ -18,6 +18,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from utils.logger import get_logger
@@ -136,6 +137,7 @@ class HealthChecker:
         report.components.append(self._check_data_feed())
         report.components.append(self._check_disk_space())
         report.components.append(self._check_memory())
+        report.components.append(self._check_ml_models())
         report.checked_at_epoch = time.time()
         logger.info(
             "Health check complete",
@@ -144,6 +146,74 @@ class HealthChecker:
         return report
 
     # ── individual checks ───────────────────────────────────
+
+    def _check_ml_models(self) -> ComponentHealth:
+        """Check status of on-disk trained ML models."""
+        models_dir = Path(os.environ.get(
+            "MODEL_PATH",
+            str(Path(__file__).parent.parent / "data" / "production" / "models")
+        ))
+        
+        slots = [
+            ("intraday_long", "Intraday Long"),
+            ("intraday_short", "Intraday Short"),
+            ("swing_long", "Swing Long"),
+            ("swing_short", "Swing Short"),
+            ("longterm_long", "Longterm Long"),
+            ("longterm_short", "Longterm Short"),
+        ]
+        
+        status_map = {}
+        active_names = []
+        
+        for slot_id, display_name in slots:
+            dir_name = f"meta_ensemble_{slot_id}"
+            path = models_dir / dir_name
+            meta_file = path / "meta.json"
+            
+            # Fallback legacy check (without long/short suffix)
+            legacy_dir = f"meta_ensemble_{slot_id.split('_')[0]}"
+            legacy_path = models_dir / legacy_dir
+            legacy_meta_file = legacy_path / "meta.json"
+            
+            if meta_file.exists():
+                status_map[slot_id] = "active"
+                active_names.append(display_name)
+            elif legacy_meta_file.exists():
+                status_map[slot_id] = "active (legacy)"
+                active_names.append(f"{display_name} (legacy)")
+            else:
+                status_map[slot_id] = "missing"
+                
+        active_count = sum(1 for v in status_map.values() if "active" in v)
+        
+        if active_count == len(slots):
+            status = ComponentStatus.HEALTHY
+            message = "All ensemble models active"
+        elif active_count > 0:
+            status = ComponentStatus.DEGRADED
+            message = f"Models degraded: {active_count}/{len(slots)} active"
+        else:
+            status = ComponentStatus.UNHEALTHY
+            message = "No ensemble models found"
+            
+        if active_names:
+            msg_detail = ", ".join(active_names)
+        else:
+            msg_detail = "None"
+            
+        return ComponentHealth(
+            name="ml_models",
+            status=status,
+            latency_ms=0.0,
+            message=msg_detail if active_count > 0 else message,
+            details={
+                "slots": status_map,
+                "active_count": active_count,
+                "total_slots": len(slots),
+                "summary": message,
+            }
+        )
 
     def _check_database(self) -> ComponentHealth:
         """Verify database connectivity with a lightweight query."""

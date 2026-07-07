@@ -8,8 +8,6 @@ Shows which features contributed most to each prediction.
 from typing import Dict, List, Optional
 import numpy as np
 import shap
-from pathlib import Path
-import joblib
 
 
 class SHAPExplainer:

@@ -44,7 +44,6 @@ class Feature(ABC):
         Returns:
             Feature name string
         """
-        pass
 
     @property
     def owner(self) -> str:
@@ -75,7 +74,6 @@ class Feature(ABC):
         Returns:
             List of dependency names
         """
-        pass
 
     @property
     @abstractmethod
@@ -86,7 +84,6 @@ class Feature(ABC):
         Returns:
             Lookback period in days
         """
-        pass
 
     @property
     def frequency(self) -> str:
@@ -119,7 +116,6 @@ class Feature(ABC):
         Returns:
             Series with computed feature values
         """
-        pass
 
     def get_metadata(self) -> dict[str, Any]:
         """

@@ -21,9 +21,9 @@ This data is critical because:
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Optional
+import random
+from typing import Optional, Any
 
-import pandas as pd
 import requests
 
 from utils.logger import get_logger
@@ -356,25 +356,44 @@ class FIIDIIAnalyzer:
             raise RuntimeError("Fatal: FII/DII activity mock fallback triggered in live/paper environment!")
         import random
         
+        fii_cash = random.uniform(-1500, 1500)
+        dii_cash = random.uniform(-800, 800)
+        fii_index_long = random.uniform(500, 2000)
+        fii_index_short = random.uniform(200, 1500)
+        fii_index_net = random.uniform(-500, 500)
+        dii_index_long = random.uniform(200, 800)
+        dii_index_short = random.uniform(100, 500)
+        dii_index_net = random.uniform(-200, 200)
+        fii_stock_long = random.uniform(200, 800)
+        fii_stock_short = random.uniform(100, 500)
+        fii_stock_net = random.uniform(-200, 200)
+        dii_stock_long = random.uniform(100, 400)
+        dii_stock_short = random.uniform(50, 200)
+        dii_stock_net = random.uniform(-100, 100)
+        
+        fii_total = fii_cash + fii_index_net + fii_stock_net
+        dii_total = dii_cash + dii_index_net + dii_stock_net
+        net_flow = fii_cash + dii_cash
+        
         return FIIActivitySnapshot(
             date=date,
-            fii_cash_net_cr=random.uniform(-1500, 1500),
-            dii_cash_net_cr=random.uniform(-800, 800),
-            fii_index_long_cr=random.uniform(500, 2000),
-            fii_index_short_cr=random.uniform(200, 1500),
-            fii_index_net_cr=random.uniform(-500, 500),
-            dii_index_long_cr=random.uniform(200, 800),
-            dii_index_short_cr=random.uniform(100, 500),
-            dii_index_net_cr=random.uniform(-200, 200),
-            fii_stock_long_cr=random.uniform(200, 800),
-            fii_stock_short_cr=random.uniform(100, 500),
-            fii_stock_net_cr=random.uniform(-200, 200),
-            dii_stock_long_cr=random.uniform(100, 400),
-            dii_stock_short_cr=random.uniform(50, 200),
-            dii_stock_net_cr=random.uniform(-100, 100),
-            fii_total_net_cr=random.uniform(-1000, 1000),
-            dii_total_net_cr=random.uniform(-500, 500),
-            net_flow_cr=random.uniform(-1200, 1200)
+            fii_cash_net_cr=fii_cash,
+            dii_cash_net_cr=dii_cash,
+            fii_index_long_cr=fii_index_long,
+            fii_index_short_cr=fii_index_short,
+            fii_index_net_cr=fii_index_net,
+            dii_index_long_cr=dii_index_long,
+            dii_index_short_cr=dii_index_short,
+            dii_index_net_cr=dii_index_net,
+            fii_stock_long_cr=fii_stock_long,
+            fii_stock_short_cr=fii_stock_short,
+            fii_stock_net_cr=fii_stock_net,
+            dii_stock_long_cr=dii_stock_long,
+            dii_stock_short_cr=dii_stock_short,
+            dii_stock_net_cr=dii_stock_net,
+            fii_total_net_cr=fii_total,
+            dii_total_net_cr=dii_total,
+            net_flow_cr=net_flow
         )
 
     def _mock_flow_trend(

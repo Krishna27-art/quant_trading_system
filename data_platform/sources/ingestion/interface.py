@@ -60,7 +60,6 @@ class NSEDataSource(ABC):
         Returns:
             IngestionResult with equity history data
         """
-        pass
 
     @abstractmethod
     def fetch_options_chain(self, symbol: str, expiry_date: str | None = None) -> IngestionResult:
@@ -74,7 +73,6 @@ class NSEDataSource(ABC):
         Returns:
             IngestionResult with options chain data
         """
-        pass
 
     @abstractmethod
     def fetch_fii_dii(self) -> IngestionResult:
@@ -84,7 +82,6 @@ class NSEDataSource(ABC):
         Returns:
             IngestionResult with FII/DII flow data
         """
-        pass
 
     @abstractmethod
     def fetch_corporate_actions(
@@ -100,7 +97,6 @@ class NSEDataSource(ABC):
         Returns:
             IngestionResult with corporate actions data
         """
-        pass
 
     @abstractmethod
     def fetch_trading_calendar(self) -> IngestionResult:
@@ -110,7 +106,6 @@ class NSEDataSource(ABC):
         Returns:
             IngestionResult with trading calendar data
         """
-        pass
 
     @abstractmethod
     def fetch_security_master(self) -> IngestionResult:
@@ -120,7 +115,6 @@ class NSEDataSource(ABC):
         Returns:
             IngestionResult with security master data
         """
-        pass
 
     def get_health(self) -> dict[str, Any]:
         """

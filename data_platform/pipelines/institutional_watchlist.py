@@ -22,11 +22,10 @@ Institutional traders prioritize:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Optional
 
 import numpy as np
-import pandas as pd
 
 from config.universe import NSE_UNIVERSE
 from utils.logger import get_logger

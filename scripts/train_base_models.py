@@ -27,8 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_platform.feature_store.macro import extract_historical_macro
 from prediction_intelligence.base_logistic import (
-    BaseLogistic,
-    EnsembleModel,
     ModelRegistry,
     build_features,
     build_label,

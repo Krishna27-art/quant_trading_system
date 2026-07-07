@@ -1,16 +1,14 @@
 import os
 import sys
-from datetime import datetime
 
 import pandas as pd
 
 # Ensure project root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from pydantic import BaseModel
 
 from prediction_intelligence.lightgbm_ranker import LightGBMRankerModel
-from prediction_intelligence.signal_adapter import SignalPrediction, from_lightgbm_ranker_output
+from prediction_intelligence.signal_adapter import from_lightgbm_ranker_output
 from research_platform.backtesting.engine import (
     BacktestConfig,
     BacktestingEngine,

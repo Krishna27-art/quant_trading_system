@@ -16,11 +16,10 @@ Determines market regime: Trending, Range-bound, Volatile, News-driven
 """
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
-import pandas as pd
 import requests
 
 from utils.logger import get_logger

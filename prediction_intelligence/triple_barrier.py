@@ -15,15 +15,14 @@ available at the time of label generation.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from prediction_intelligence.label_models import Label, LabelType
 from utils.label_validator import LabelValidator
 from utils.logger import get_logger
+from utils.time_utils import now_ist
 
 logger = get_logger("triple_barrier")
 
@@ -107,7 +106,8 @@ class TripleBarrierLabeler:
             low_prices = prices
 
         labels = []
-        now = pd.Timestamp.now()
+        # Use IST-aware timestamp for ingestion_time — consistent with the rest of the pipeline
+        now = pd.Timestamp(now_ist())
 
         for i in range(len(close_prices) - self.vertical_barrier_days):
             entry_price = close_prices.iloc[i]
@@ -167,7 +167,18 @@ class TripleBarrierLabeler:
                 actual_mfe = max(0, (future_highs.max() - entry_price) / entry_price)
                 actual_mae = min(0, (future_lows.min() - entry_price) / entry_price)
 
-            # Create Label object with full PIT chain
+            # Create Label object with full PIT chain.
+            #
+            # Point-in-time semantics:
+            #   event_time       = bar i (trade entry — when the signal fires)
+            #   publication_time = exit_time (when the outcome is KNOWN: barrier hit or horizon end)
+            #   effective_time   = exit_time (same — the outcome cannot be used before it is known)
+            #   ingestion_time   = now (wall-clock time this label was generated)
+            #
+            # CRITICAL: publication_time must NOT equal entry_time because the label value
+            # (which barrier was hit) is only observable at exit_time.  Setting it to entry_time
+            # causes any PIT filter (df[publication_time <= cutoff]) to admit future information.
+            exit_timestamp = pd.Timestamp(exit_time)
             try:
                 label = Label(
                     symbol=symbol,
@@ -176,8 +187,8 @@ class TripleBarrierLabeler:
                     label_date=entry_time,
                     horizon_days=self.vertical_barrier_days,
                     event_time=entry_time,
-                    publication_time=entry_time,  # Same bar for now
-                    effective_time=entry_time,
+                    publication_time=exit_timestamp,   # FIX: outcome known at exit, not entry
+                    effective_time=exit_timestamp,     # FIX: cannot trade on this before exit
                     ingestion_time=now,
                     source=source,
                     version=version,

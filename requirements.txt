@@ -195,7 +195,7 @@ graphql-relay==3.2.0
     # via graphene
 graphviz==0.21
     # via prefect
-great-expectations==1.18.1
+# great-expectations==0.18.22  # Removed due to altair dependency conflict
     # via quant-research-os (pyproject.toml)
 greenlet==3.5.2
     # via sqlalchemy

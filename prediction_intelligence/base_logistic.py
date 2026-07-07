@@ -108,7 +108,6 @@ def build_label(
     horizon = default_horizon
 
     # Calculate symbol-specific transaction costs
-    import os
     symbol = "DEFAULT"
     if "symbol" in df.columns:
         symbol = str(df["symbol"].iloc[0]).upper()
@@ -267,7 +266,6 @@ class BaseLogistic:
         from data_platform.features.canonical_builder import (
             INTRADAY_FEATURES,
             SWING_FEATURES,
-            LONGTERM_FEATURES,
         )
         if set(self.feature_names).issubset(set(INTRADAY_FEATURES)):
             v_barrier = 10

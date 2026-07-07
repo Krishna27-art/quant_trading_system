@@ -329,7 +329,6 @@ class LightGBMRankerModel:
 try:
     from portfolio_execution.signals.base import (
         AlphaModel,
-        AlphaSignal,
         SignalDirection,
         SignalNorm,
     )

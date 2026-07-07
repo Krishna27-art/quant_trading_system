@@ -161,7 +161,7 @@ class PortfolioOptimizer:
         self.logger.info(f"Optimizing portfolio using {self.method} method")
 
         if self.method == OptimizationMethod.EQUAL_WEIGHT:
-            return self._equal_weight(expected_returns, constraints)
+            return self._equal_weight(expected_returns, covariance_matrix, constraints)
         elif self.method == OptimizationMethod.MEAN_VARIANCE:
             return self._mean_variance(
                 expected_returns, covariance_matrix, constraints, initial_weights
@@ -188,7 +188,10 @@ class PortfolioOptimizer:
             raise ValueError(f"Unsupported optimization method: {self.method}")
 
     def _equal_weight(
-        self, expected_returns: pd.Series, constraints: OptimizationConstraints
+        self, 
+        expected_returns: pd.Series, 
+        covariance_matrix: pd.DataFrame, 
+        constraints: OptimizationConstraints
     ) -> OptimizationResult:
         """Calculate equal-weighted portfolio."""
         n = len(expected_returns)

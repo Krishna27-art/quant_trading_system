@@ -293,27 +293,69 @@ class HealthChecker:
             )
 
     def _check_data_feed(self) -> ComponentHealth:
-        """Check freshness of the last received market tick."""
-        if self._last_tick_epoch <= 0:
-            return ComponentHealth(
-                name="data_feed",
-                status=ComponentStatus.DEGRADED,
-                message="No ticks received yet",
-            )
-        lag = time.time() - self._last_tick_epoch
-        if lag <= self.data_feed_staleness_threshold_s:
+        """Check freshness of the last received market tick with MarketCalendar awareness and Redis check."""
+        from utils.market_calendar import MarketCalendar
+        import datetime as dt
+        
+        cal = MarketCalendar()
+        now = dt.datetime.now()
+        
+        if not cal.is_trading_day(now):
             return ComponentHealth(
                 name="data_feed",
                 status=ComponentStatus.HEALTHY,
-                message=f"Feed lag {lag:.1f}s within threshold",
-                details={"lag_seconds": round(lag, 2)},
+                message="Market closed (non-trading day) — feed idle as expected",
             )
+            
+        hours = cal.get_session_hours(now)
+        if not (hours["start"] <= now.time() <= hours["end"]):
+            return ComponentHealth(
+                name="data_feed",
+                status=ComponentStatus.HEALTHY,
+                message="Outside session hours — feed idle as expected",
+            )
+
+        # Read the real source: last entry in the Redis live_ticks stream
+        try:
+            import redis
+            r = redis.Redis(host="localhost", port=6379, db=0)
+            last = r.xrevrange("live_ticks", count=1)
+            if not last:
+                return ComponentHealth(
+                    name="data_feed",
+                    status=ComponentStatus.UNHEALTHY,
+                    message="No ticks in live_ticks stream during market hours",
+                )
+            last_id = last[0][0].decode()
+            last_epoch = int(last_id.split("-")[0]) / 1000.0
+            self.update_last_tick(last_epoch)
+        except Exception as exc:
+            # Fallback to current memory cache if Redis fails, but report unhealthy/degraded
+            lag = time.time() - self._last_tick_epoch if self._last_tick_epoch > 0 else None
+            if lag is not None and lag <= self.data_feed_staleness_threshold_s:
+                # Cache is fresh, but Redis is unreachable
+                return ComponentHealth(
+                    name="data_feed",
+                    status=ComponentStatus.DEGRADED,
+                    message=f"Redis live_ticks unreachable: {exc}. Memory cache lag {lag:.1f}s",
+                    details={"lag_seconds": round(lag, 2)},
+                )
+            return ComponentHealth(
+                name="data_feed",
+                status=ComponentStatus.UNHEALTHY,
+                message=f"Cannot reach live_ticks stream: {exc}",
+            )
+
+        lag = time.time() - self._last_tick_epoch
+        threshold = self.data_feed_staleness_threshold_s
+        status = ComponentStatus.HEALTHY if lag <= threshold else ComponentStatus.UNHEALTHY
         return ComponentHealth(
             name="data_feed",
-            status=ComponentStatus.UNHEALTHY,
-            message=f"Feed lag {lag:.1f}s exceeds {self.data_feed_staleness_threshold_s}s threshold",
+            status=status,
+            message=f"Feed lag {lag:.1f}s (threshold {threshold}s)",
             details={"lag_seconds": round(lag, 2)},
         )
+
 
     def _check_disk_space(self) -> ComponentHealth:
         """Check disk usage on the data partition."""

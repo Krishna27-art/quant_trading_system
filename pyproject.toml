@@ -54,7 +54,6 @@ dependencies = [
     "PyJWT>=2.8.0",
     "websockets>=12.0",
     "psycopg2-binary>=2.9.9",
-    "anthropic>=0.30.0",
     "smartapi-python>=1.3.0",
     "statsmodels>=0.14.0",
     "transformers>=4.30.0",

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String, Text, UniqueConstraint, Date, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import synonym
 
@@ -98,3 +98,20 @@ class PaperTrade(Base):
     pnl = Column(Numeric(12, 2))
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime)
+
+
+class AIMarketOutlook(Base):
+    __tablename__ = "ai_market_outlook"
+
+    id = Column(String(50), primary_key=True)
+    date = Column(Date, unique=True, nullable=False)
+    market_regime = Column(String(50), nullable=False)
+    risk_level = Column(String(50), nullable=False)
+    confidence = Column(Float, nullable=False)
+    sector_rotation = Column(Text)  # JSON serialized array
+    top_themes = Column(Text)       # JSON serialized array
+    watchlist = Column(Text)        # JSON serialized array
+    warnings = Column(Text)         # JSON serialized array
+    raw_json = Column(Text)
+    created_at = Column(DateTime, nullable=False)
+

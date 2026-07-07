@@ -33,6 +33,14 @@ try:
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     logger.info("Synchronous database engine initialized successfully.")
 
+    # Synchronize database schema automatically
+    try:
+        from database.models import Base
+        Base.metadata.create_all(engine)
+        logger.info("Database schema synchronized successfully via Base.metadata.create_all.")
+    except Exception as e:
+        logger.error(f"Failed to synchronize database schema: {e}")
+
     # SQLite schema migration helper
     if is_sqlite:
         import sqlite3

@@ -503,7 +503,87 @@ function FiiDiiWidget({ fiiDii }) {
   );
 }
 
-function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, fiiDii, topLosers, onOpen }) {
+function AiOutlookWidget({ outlook }) {
+  if (!outlook) {
+    return (
+      <div className="text-slate-400 text-xs py-4 text-center font-mono">
+        Loading AI Outlook...
+      </div>
+    );
+  }
+
+  const confidencePct = Math.round(outlook.confidence * 100);
+
+  return (
+    <div className="flex flex-col gap-4 font-mono text-xs text-slate-300">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-slate-950 p-2.5 rounded border border-slate-800 flex flex-col gap-1">
+          <span className="text-[10px] text-slate-500 uppercase">Regime</span>
+          <span className="font-bold text-cyan-400">{outlook.market_regime}</span>
+        </div>
+        <div className="bg-slate-950 p-2.5 rounded border border-slate-800 flex flex-col gap-1">
+          <span className="text-[10px] text-slate-500 uppercase">Risk Level</span>
+          <span className={`font-bold ${outlook.risk_level === 'High' ? 'text-red-400' : outlook.risk_level === 'Moderate' ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {outlook.risk_level}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1 bg-slate-950 p-3 rounded border border-slate-800">
+        <div className="flex justify-between items-center text-[10px] text-slate-500 uppercase">
+          <span>AI Strategy Confidence</span>
+          <span className="font-mono text-cyan-400 font-bold">{confidencePct}%</span>
+        </div>
+        <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden">
+          <div 
+            className="bg-cyan-500 h-1.5 rounded-full transition-all duration-500" 
+            style={{ width: `${confidencePct}%` }}
+          />
+        </div>
+      </div>
+
+      {outlook.warnings && outlook.warnings.length > 0 && (
+        <div className="flex flex-col gap-1.5 bg-red-950/20 border border-red-900/30 rounded p-3">
+          <span className="text-[10px] uppercase text-red-400 font-bold tracking-wider">Major Risks</span>
+          <ul className="list-disc list-inside text-[11px] text-slate-300 flex flex-col gap-1">
+            {outlook.warnings.map((w, idx) => (
+              <li key={idx} className="leading-tight">{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {outlook.watchlist && outlook.watchlist.length > 0 && (
+        <div className="flex flex-col gap-1.5 bg-slate-950 p-3 rounded border border-slate-800">
+          <span className="text-[10px] uppercase text-slate-500 tracking-wider">Stocks to Watch</span>
+          <div className="flex flex-wrap gap-1.5">
+            {outlook.watchlist.map((stock, idx) => (
+              <span key={idx} className="bg-slate-900 text-slate-200 px-2 py-0.5 rounded border border-slate-800 text-[10px]">
+                {stock}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {outlook.top_themes && outlook.top_themes.length > 0 && (
+        <div className="flex flex-col gap-1.5 bg-slate-950 p-3 rounded border border-slate-800">
+          <span className="text-[10px] uppercase text-slate-500 tracking-wider">Top Themes</span>
+          <div className="flex flex-wrap gap-1">
+            {outlook.top_themes.map((theme, idx) => (
+              <span key={idx} className="text-cyan-400/90 text-[11px]">
+                • {theme}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, fiiDii, topLosers, outlook, onOpen }) {
   const buySignals = useMemo(() => {
     return predictions.filter(p => p.prediction === 'BUY' || p.prediction === 'LONG');
   }, [predictions]);
@@ -516,8 +596,11 @@ function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, fii
 
   return (
     <div className="grid grid-cols-12 gap-4 animate-fade-in">
-      <Card title="Latest Buy Signals" className="col-span-8 row-span-2">
+      <Card title="Latest Buy Signals" className="col-span-8 row-span-3">
         <TopSignalsTable data={buySignals} onOpen={onOpen} />
+      </Card>
+      <Card title="Today's AI Outlook" className="col-span-4">
+        <AiOutlookWidget outlook={outlook} />
       </Card>
       <Card title="Top Movers (Chg%)" className="col-span-4">
         <RankedStocksList data={topMovers} onOpen={onOpen} isMovers={true} />
@@ -1275,6 +1358,7 @@ export default function QuantTerminal() {
   const [indices, setIndices] = useState([]);
   const [health, setHealth] = useState([]);
   const [fiiDii, setFiiDii] = useState(null);
+  const [outlook, setOutlook] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Sorting state for stocks table
@@ -1285,12 +1369,13 @@ export default function QuantTerminal() {
 
   const fetchAllData = useCallback(async () => {
     try {
-      const [stocksRes, predRes, healthRes, indicesRes, fiiDiiRes] = await Promise.all([
+      const [stocksRes, predRes, healthRes, indicesRes, fiiDiiRes, outlookRes] = await Promise.all([
         fetch(`${API_BASE}/stocks`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/predictions?limit=1000`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/health/status`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/indices`).then(r => r.ok ? r.json() : []),
-        fetch(`${API_BASE}/institutional/fii_dii`).then(r => r.ok ? r.json() : null)
+        fetch(`${API_BASE}/institutional/fii_dii`).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/market/outlook`).then(r => r.ok ? r.json() : null)
       ]);
 
       setStocks(stocksRes || []);
@@ -1298,6 +1383,7 @@ export default function QuantTerminal() {
       setHealth(healthRes || []);
       setIndices(indicesRes || []);
       setFiiDii(fiiDiiRes || null);
+      setOutlook(outlookRes || null);
     } catch (e) {
       console.error("Failed to fetch dashboard data:", e);
     } finally {
@@ -1434,6 +1520,7 @@ export default function QuantTerminal() {
                   metrics={metrics}
                   fiiDii={fiiDii}
                   topLosers={topLosers}
+                  outlook={outlook}
                   onOpen={openStock}
                 />
               )}

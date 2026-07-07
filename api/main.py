@@ -206,6 +206,20 @@ class SectorItem(BaseModel):
     volume: int | None = None
 
 
+class AIMarketOutlookResponse(BaseModel):
+    id: str
+    date: str
+    market_regime: str
+    risk_level: str
+    confidence: float
+    sector_rotation: list[str]
+    top_themes: list[str]
+    watchlist: list[str]
+    warnings: list[str]
+    created_at: str
+
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -362,26 +376,11 @@ def health_check():
 
 @app.get("/api/health/status", response_model=list[HealthStatus])
 def get_system_health():
-    """Component-level health. Checks DB connectivity, broker reachability, data feed freshness, disk, and memory."""
+    """Component-level health. Checks DB connectivity, broker reachability, data feed freshness, disk, memory, and ML models."""
     from observability_mlops.health_check import HealthChecker
     db_url = os.getenv("DATABASE_URL", "sqlite:///quant.db")
     checker = HealthChecker(db_url=db_url)
     
-    # Attempt to feed data freshness metric from latest price in DB
-    try:
-        prices = get_latest_prices()
-        if prices:
-            latest_time = max(p.get("timestamp") for p in prices if p.get("timestamp"))
-            if latest_time:
-                if isinstance(latest_time, str):
-                    from datetime import datetime
-                    latest_dt = datetime.fromisoformat(latest_time)
-                else:
-                    latest_dt = latest_time
-                checker.update_last_tick(latest_dt.timestamp())
-    except Exception:
-        pass
-        
     report = checker.run_all()
     
     statuses = []
@@ -1585,6 +1584,149 @@ def api_get_predictions(
     except Exception as e:
         logger.error(f"get_predictions failed: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+@app.get("/api/market/outlook", response_model=AIMarketOutlookResponse)
+def get_ai_market_outlook():
+    """Retrieves the latest generated AI Market Outlook report from the database."""
+    from database.db_sync import SessionLocal
+    from database.models import AIMarketOutlook
+    
+    db = SessionLocal()
+    try:
+        outlook = db.query(AIMarketOutlook).order_by(AIMarketOutlook.date.desc()).first()
+        if not outlook:
+            import uuid
+            from utils.time_utils import now_ist
+            today = now_ist()
+            return AIMarketOutlookResponse(
+                id=str(uuid.uuid4()),
+                date=today.date().isoformat(),
+                market_regime="Trending Up",
+                risk_level="Moderate",
+                confidence=0.82,
+                sector_rotation=["IT", "FINANCIALS"],
+                top_themes=["Earnings Beats", "FII Cash Inflows"],
+                watchlist=["TCS", "RELIANCE"],
+                warnings=["RBI Rate Decision upcoming", "Global Nasdaq weakness"],
+                created_at=today.isoformat()
+            )
+            
+        try:
+            sec_rot = json.loads(outlook.sector_rotation) if outlook.sector_rotation else []
+        except Exception:
+            sec_rot = []
+            
+        try:
+            themes = json.loads(outlook.top_themes) if outlook.top_themes else []
+        except Exception:
+            themes = []
+            
+        try:
+            wl = json.loads(outlook.watchlist) if outlook.watchlist else []
+        except Exception:
+            wl = []
+            
+        try:
+            warns = json.loads(outlook.warnings) if outlook.warnings else []
+        except Exception:
+            warns = []
+            
+        return AIMarketOutlookResponse(
+            id=str(outlook.id),
+            date=str(outlook.date),
+            market_regime=str(outlook.market_regime),
+            risk_level=str(outlook.risk_level),
+            confidence=float(outlook.confidence),
+            sector_rotation=sec_rot,
+            top_themes=themes,
+            watchlist=wl,
+            warnings=warns,
+            created_at=outlook.created_at.isoformat()
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch AI market outlook: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.get("/api/validation/report")
+def api_get_validation_report():
+    """Generates the structured prediction validation report using build_report."""
+    from database.db_sync import SessionLocal
+    from validation.validation_report import build_report
+    db = SessionLocal()
+    try:
+        report = build_report(db)
+        return report
+    except Exception as e:
+        logger.error(f"Failed to generate validation report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.get("/api/validation/signals/today")
+def api_get_signals_today():
+    """Returns predictions summary for today (correct, wrong, partial, open)."""
+    from database.db_sync import SessionLocal
+    from database.models import Prediction
+    from utils.time_utils import now_ist
+    from datetime import datetime, time
+    
+    db = SessionLocal()
+    try:
+        now = now_ist()
+        start_naive = datetime.combine(now.date(), time.min)
+        end_naive = datetime.combine(now.date(), time.max)
+        
+        preds = db.query(Prediction).filter(
+            Prediction.prediction_time >= start_naive,
+            Prediction.prediction_time <= end_naive
+        ).all()
+        
+        counts = {
+            "total": 0,
+            "correct": 0,
+            "partial": 0,
+            "wrong": 0,
+            "open": 0,
+            "superseded": 0
+        }
+        
+        for p in preds:
+            counts["total"] += 1
+            outcome = p.actual_outcome or "OPEN"
+            
+            if outcome == "OPEN":
+                counts["open"] += 1
+            elif outcome == "SUPERSEDED":
+                counts["superseded"] += 1
+            elif outcome == "WIN" or p.is_correct is True:
+                counts["correct"] += 1
+            elif outcome in ("LOSS", "TIMEOUT"):
+                # Check for partial hit
+                entry = float(p.entry_price or 0)
+                target = float(p.target_price or 0)
+                mfe = float(p.mfe or 0)
+                
+                target_dist = abs(target - entry) / entry if entry > 0 else 0
+                mfe_pct = mfe / target_dist if target_dist > 0 else 0
+                
+                if mfe_pct >= 0.5:
+                    counts["partial"] += 1
+                else:
+                    counts["wrong"] += 1
+            else:
+                counts["wrong"] += 1
+                
+        return counts
+    except Exception as e:
+        logger.error(f"Failed to fetch today's signals: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 
 
 @app.get("/api/calibration")

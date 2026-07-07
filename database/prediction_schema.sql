@@ -58,3 +58,21 @@ CREATE INDEX IF NOT EXISTS idx_predictions_open
 --   ALTER TABLE predictions ADD COLUMN IF NOT EXISTS exit_time TIMESTAMPTZ;
 --   ALTER TABLE predictions ADD COLUMN IF NOT EXISTS hold_bars INTEGER;
 
+
+CREATE TABLE IF NOT EXISTS ai_market_outlook (
+    id TEXT PRIMARY KEY,
+    date DATE UNIQUE NOT NULL,
+    market_regime TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    sector_rotation TEXT, -- JSON array
+    top_themes TEXT,       -- JSON array
+    watchlist TEXT,        -- JSON array
+    warnings TEXT,         -- JSON array
+    raw_json TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_market_outlook_date ON ai_market_outlook(date DESC);
+
+

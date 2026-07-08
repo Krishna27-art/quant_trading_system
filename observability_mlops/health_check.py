@@ -296,26 +296,41 @@ class HealthChecker:
         """Check freshness of the last received market tick with MarketCalendar awareness and Redis check."""
         from utils.market_calendar import MarketCalendar
         import datetime as dt
+        import zoneinfo
         
+        IST = zoneinfo.ZoneInfo("Asia/Kolkata")
         cal = MarketCalendar()
-        now = dt.datetime.now()
+        now_ist = dt.datetime.now(tz=IST)
+        now_naive = now_ist.replace(tzinfo=None)  # calendar expects naive IST
         
-        if not cal.is_trading_day(now):
+        if not cal.is_trading_day(now_naive):
             return ComponentHealth(
                 name="data_feed",
                 status=ComponentStatus.HEALTHY,
                 message="Market closed (non-trading day) — feed idle as expected",
             )
             
-        hours = cal.get_session_hours(now)
-        if not (hours["start"] <= now.time() <= hours["end"]):
+        hours = cal.get_session_hours(now_naive)
+        if not (hours["start"] <= now_naive.time() <= hours["end"]):
             return ComponentHealth(
                 name="data_feed",
                 status=ComponentStatus.HEALTHY,
-                message="Outside session hours — feed idle as expected",
+                message=f"Outside session hours ({hours['start']} – {hours['end']} IST) — feed idle as expected",
             )
 
-        # Read the real source: last entry in the Redis live_ticks stream
+        # Check Redis reachability first
+        try:
+            import redis
+            r = redis.Redis(host="localhost", port=6379, db=0, socket_connect_timeout=2)
+            r.ping()  # Will raise if Redis not running
+        except Exception as exc:
+            return ComponentHealth(
+                name="data_feed",
+                status=ComponentStatus.DEGRADED,
+                message=f"Redis unreachable — run 'redis-server' to enable live feed: {exc}",
+            )
+
+        # Redis is up — check live_ticks stream
         try:
             import redis
             r = redis.Redis(host="localhost", port=6379, db=0)
@@ -323,27 +338,17 @@ class HealthChecker:
             if not last:
                 return ComponentHealth(
                     name="data_feed",
-                    status=ComponentStatus.UNHEALTHY,
-                    message="No ticks in live_ticks stream during market hours",
+                    status=ComponentStatus.DEGRADED,
+                    message="Redis up but live_ticks stream empty — FeedManager not yet started or no ticks published this session",
                 )
             last_id = last[0][0].decode()
             last_epoch = int(last_id.split("-")[0]) / 1000.0
             self.update_last_tick(last_epoch)
         except Exception as exc:
-            # Fallback to current memory cache if Redis fails, but report unhealthy/degraded
-            lag = time.time() - self._last_tick_epoch if self._last_tick_epoch > 0 else None
-            if lag is not None and lag <= self.data_feed_staleness_threshold_s:
-                # Cache is fresh, but Redis is unreachable
-                return ComponentHealth(
-                    name="data_feed",
-                    status=ComponentStatus.DEGRADED,
-                    message=f"Redis live_ticks unreachable: {exc}. Memory cache lag {lag:.1f}s",
-                    details={"lag_seconds": round(lag, 2)},
-                )
             return ComponentHealth(
                 name="data_feed",
                 status=ComponentStatus.UNHEALTHY,
-                message=f"Cannot reach live_ticks stream: {exc}",
+                message=f"Cannot read live_ticks stream: {exc}",
             )
 
         lag = time.time() - self._last_tick_epoch

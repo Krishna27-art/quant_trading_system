@@ -1189,27 +1189,50 @@ def get_swing_score(symbol: str):
         
         scorer = SwingTradingScorer(use_mock_data=True)
         
-        # Score single stock (would need modification to scorer for single stock)
-        # For now, return mock response
+        # Get sector mapping from universe if available, otherwise default
+        try:
+            from config.universe import UNIVERSE_TICKERS
+            matching_stock = None
+            for t in UNIVERSE_TICKERS:
+                if t["symbol"].lower() == symbol.lower():
+                    matching_stock = t
+                    break
+        except Exception:
+            matching_stock = None
+            
+        if not matching_stock:
+            matching_stock = {
+                "symbol": symbol.upper(),
+                "name": symbol.upper(),
+                "sector": "Unknown"
+            }
+            
+        regime = scorer._determine_market_regime()
+        regime_score = scorer._score_market_regime(regime)
+        score_obj = scorer._score_stock(matching_stock, regime, regime_score)
+        
         return {
-            "symbol": symbol.upper(),
-            "final_score": 87.5,
+            "symbol": score_obj.symbol,
+            "name": score_obj.name,
+            "sector": score_obj.sector,
+            "final_score": round(score_obj.final_score, 1),
             "component_scores": {
-                "market_regime": 75.0,
-                "sector_strength": 80.0,
-                "relative_strength": 85.0,
-                "liquidity": 90.0,
-                "trend_quality": 88.0,
-                "volume_confirmation": 82.0,
-                "catalyst": 75.0,
-                "risk_volatility": 85.0
+                "market_regime": round(score_obj.market_regime_score, 1),
+                "sector_strength": round(score_obj.sector_strength_score, 1),
+                "relative_strength": round(score_obj.relative_strength_score, 1),
+                "liquidity": round(score_obj.liquidity_score, 1),
+                "trend_quality": round(score_obj.trend_quality_score, 1),
+                "volume_confirmation": round(score_obj.volume_confirmation_score, 1),
+                "catalyst": round(score_obj.catalyst_score, 1),
+                "risk_volatility": round(score_obj.risk_volatility_score, 1)
             },
-            "qualifies": True,
-            "entry_type": "breakout",
-            "suggested_stop_loss_pct": 4.0,
-            "suggested_target_pct": 12.0,
-            "risk_reward_ratio": 3.0,
-            "timestamp": now_ist().isoformat()
+            "qualifies": score_obj.final_score >= 70.0,
+            "entry_type": score_obj.entry_type,
+            "suggested_stop_loss_pct": round(score_obj.suggested_stop_loss_pct, 2),
+            "suggested_target_pct": round(score_obj.suggested_target_pct, 2),
+            "risk_reward_ratio": round(score_obj.risk_reward_ratio, 2),
+            "timestamp": score_obj.timestamp.isoformat(),
+            "data_quality": "partial_mock"
         }
     except Exception as e:
         logger.error(f"Swing score failed for {symbol}: {e}", exc_info=True)

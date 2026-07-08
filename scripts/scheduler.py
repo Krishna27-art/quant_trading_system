@@ -3,6 +3,11 @@ import datetime
 import json
 import multiprocessing
 import time
+import sys
+import os
+
+# Ensure the root project directory is in the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import redis
 
@@ -35,13 +40,23 @@ async def upstox_ws_connect(symbols: list[str], on_tick) -> None:
                 clean_sym = sym.replace(".NS", "").upper()
                 quote = quotes.get(clean_sym)
                 if quote:
+                    ts_val = quote.get("timestamp")
+                    if isinstance(ts_val, str):
+                        try:
+                            # Handle ISO 8601 strings from Upstox
+                            ts_val = datetime.datetime.fromisoformat(ts_val).timestamp()
+                        except ValueError:
+                            ts_val = now
+                    else:
+                        ts_val = float(ts_val or now)
+
                     tick = TickData(
                         symbol=sym,
                         ltp=float(quote["last_price"] or 0.0),
                         bid=float(quote.get("bid") or quote["last_price"] or 0.0),
                         ask=float(quote.get("ask") or quote["last_price"] or 0.0),
-                        volume=int(quote["volume"] or 0),
-                        timestamp=float(quote["timestamp"] or now),
+                        volume=int(quote.get("volume") or 0),
+                        timestamp=ts_val,
                         received_at=now,
                         feed_tier=FeedTier.PRIMARY
                     )
@@ -205,20 +220,19 @@ def run_execution_loop():
 
 
 async def self_correcting_timer(target_hour, target_minute, callback_coro):
-    """Self-correcting timer loop that handles cron-like tasks without drift."""
+    """Self-correcting timer loop that handles cron-like tasks without drift. Uses explicit IST."""
+    import zoneinfo
+    IST = zoneinfo.ZoneInfo("Asia/Kolkata")
     while True:
-        time.time()
-        # Find next occurrences
-        dt_now = datetime.datetime.now()
-        dt_target = dt_now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
-        if dt_target <= dt_now:
+        now_ist = datetime.datetime.now(tz=IST)
+        dt_target = now_ist.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        if dt_target <= now_ist:
             dt_target += datetime.timedelta(days=1)
 
-        wait_seconds = (dt_target - dt_now).total_seconds()
-        logger.info(f"Next job scheduled for {dt_target}. Waiting {wait_seconds:.2f} seconds...")
+        wait_seconds = (dt_target - now_ist).total_seconds()
+        logger.info(f"Next job scheduled for {dt_target.strftime('%H:%M IST')}. Waiting {wait_seconds:.0f}s...")
         await asyncio.sleep(wait_seconds)
 
-        # Trigger
         try:
             await callback_coro()
         except Exception as e:

@@ -111,9 +111,9 @@ def _get_fundamentals(symbol: str) -> dict[str, float]:
 # Training runners
 # ---------------------------------------------------------------------------
 
-def train_timeframe(symbols: list[str], timeframe: str, model_dir: str) -> None:
+def train_timeframe(symbols: list[str], timeframe: str, model_dir: str, version: str = "v1") -> None:
     tf = timeframe.upper()
-    logger.info(f"=== Training {tf} (Long & Short Models) ===")
+    logger.info(f"=== Training {tf} (Long & Short Models - Version {version}) ===")
 
     validator = LabelValidator()
     all_X_long: list[pd.DataFrame] = []
@@ -197,6 +197,11 @@ def train_timeframe(symbols: list[str], timeframe: str, model_dir: str) -> None:
 
     model_long = MetaEnsemble(timeframe=tf, model_dir=model_dir, feature_cols=feature_cols)
     metrics_long = model_long.fit(X_long, y_long)
+    
+    # Save both to the versioned and copy/symlink to current default directory
+    versioned_long_path = os.path.join(model_dir, f"meta_ensemble_{tf.lower()}_long_{version}")
+    model_long.save(versioned_long_path)
+    # Also save to un-versioned directory for default pathing fallback
     model_long.save(os.path.join(model_dir, f"meta_ensemble_{tf.lower()}_long"))
     logger.info(f"{tf} Long MetaEnsemble saved. Metrics: {metrics_long}")
 
@@ -211,6 +216,9 @@ def train_timeframe(symbols: list[str], timeframe: str, model_dir: str) -> None:
 
     model_short = MetaEnsemble(timeframe=tf, model_dir=model_dir, feature_cols=feature_cols)
     metrics_short = model_short.fit(X_short, y_short)
+    
+    versioned_short_path = os.path.join(model_dir, f"meta_ensemble_{tf.lower()}_short_{version}")
+    model_short.save(versioned_short_path)
     model_short.save(os.path.join(model_dir, f"meta_ensemble_{tf.lower()}_short"))
     logger.info(f"{tf} Short MetaEnsemble saved. Metrics: {metrics_short}")
 
@@ -219,8 +227,8 @@ def train_timeframe(symbols: list[str], timeframe: str, model_dir: str) -> None:
     ModelRegistry(model_dir=model_dir).save_imputer(tf, imputer)
 
     # Register in singleton
-    ModelRegistry().register(f"META_{tf}_v1_long", tf, model_long)
-    ModelRegistry().register(f"META_{tf}_v1_short", tf, model_short)
+    ModelRegistry().register(f"META_{tf}_{version}_long", tf, model_long)
+    ModelRegistry().register(f"META_{tf}_{version}_short", tf, model_short)
 
     # Log the experiment details
     try:
@@ -244,16 +252,16 @@ def train_timeframe(symbols: list[str], timeframe: str, model_dir: str) -> None:
         logger.warning(f"Failed to log experiment: {te}")
 
 
-def train_longterm(symbols: list[str], model_dir: str) -> None:
-    train_timeframe(symbols, "LONGTERM", model_dir)
+def train_longterm(symbols: list[str], model_dir: str, version: str) -> None:
+    train_timeframe(symbols, "LONGTERM", model_dir, version)
 
 
-def train_swing(symbols: list[str], model_dir: str) -> None:
-    train_timeframe(symbols, "SWING", model_dir)
+def train_swing(symbols: list[str], model_dir: str, version: str) -> None:
+    train_timeframe(symbols, "SWING", model_dir, version)
 
 
-def train_intraday(symbols: list[str], model_dir: str) -> None:
-    train_timeframe(symbols, "INTRADAY", model_dir)
+def train_intraday(symbols: list[str], model_dir: str, version: str) -> None:
+    train_timeframe(symbols, "INTRADAY", model_dir, version)
 
 
 # ---------------------------------------------------------------------------
@@ -269,20 +277,22 @@ def main():
     ))
     parser.add_argument("--timeframe", choices=["all", "intraday", "swing", "longterm"],
                         default="all")
+    parser.add_argument("--version", default="v1", help="Model version identifier (e.g. v1, v2)")
     args = parser.parse_args()
 
     os.makedirs(args.model_dir, exist_ok=True)
     logger.info(f"Model directory: {args.model_dir}")
     logger.info(f"Symbols: {args.symbols}")
+    logger.info(f"Version: {args.version}")
 
     if args.timeframe in ("all", "longterm"):
-        train_longterm(args.symbols, args.model_dir)
+        train_longterm(args.symbols, args.model_dir, args.version)
 
     if args.timeframe in ("all", "swing"):
-        train_swing(args.symbols, args.model_dir)
+        train_swing(args.symbols, args.model_dir, args.version)
 
     if args.timeframe in ("all", "intraday"):
-        train_intraday(args.symbols, args.model_dir)
+        train_intraday(args.symbols, args.model_dir, args.version)
 
     logger.info("Training complete. Run generate_live_predictions.py to start live signals.")
 

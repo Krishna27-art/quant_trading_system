@@ -239,8 +239,15 @@ def get_bulk_quotes(symbols: list[str]) -> dict[str, dict]:
             key_to_sym[k]               = sym
             key_to_sym[k.replace("|",":")]=sym
     raw = get_live_quotes(keys)
-    return {key_to_sym[rk]: _format_quote(key_to_sym[rk], q)
-            for rk, q in raw.items() if rk in key_to_sym}
+    
+    # Upstox returns keys like NSE_EQ:RELIANCE, but q contains 'instrument_token' with the original key
+    result = {}
+    for rk, q in raw.items():
+        original_key = q.get("instrument_token") or rk
+        sym = key_to_sym.get(original_key)
+        if sym:
+            result[sym] = _format_quote(sym, q)
+    return result
 
 
 def _format_quote(symbol: str, q: dict) -> dict:

@@ -604,7 +604,22 @@ class ModelRegistry:
             from prediction_intelligence.meta_ensemble import MetaEnsemble
             model = MetaEnsemble(timeframe=timeframe, model_dir=self._model_dir)
             suffix = "_long" if "_long" in model_version else "_short" if "_short" in model_version else ""
-            dir_p = os.path.join(self._model_dir, f"meta_ensemble_{timeframe.lower()}{suffix}")
+            
+            # Parse version identifier (e.g. "v1" from "META_SWING_v1_long")
+            parts = model_version.split("_")
+            version_suffix = ""
+            for p in parts:
+                if p.startswith("v") and len(p) > 1 and p[1:].isdigit():
+                    version_suffix = f"_{p}"
+                    break
+            
+            # Try version-suffixed path first, fall back to legacy un-suffixed path
+            dir_name = f"meta_ensemble_{timeframe.lower()}{suffix}{version_suffix}"
+            dir_p = os.path.join(self._model_dir, dir_name)
+            if not os.path.isdir(dir_p):
+                # Fallback
+                dir_p = os.path.join(self._model_dir, f"meta_ensemble_{timeframe.lower()}{suffix}")
+                
             if os.path.isdir(dir_p):
                 model.load(dir_p)
             else:

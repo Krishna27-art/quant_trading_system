@@ -293,11 +293,27 @@ def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[
         momentum = value("momentum_5m")
         vwap_dist = value("vwap_dist")
         vol_ratio = value("vol_ratio_1m", 1.0)
+        macd_hist = value("macd_hist", 0.0)
 
+        # Momentum: primary direction signal (weight 1.0)
         votes["momentum_5m"] = 1.0 if momentum > 0 else -1.0 if momentum < 0 else 0.0
+        # VWAP distance: secondary directional (weight 0.75)
         votes["vwap_dist"] = 0.75 if vwap_dist > 0 else -0.75 if vwap_dist < 0 else 0.0
-        votes["rsi_14m"] = 0.5 if 35 <= rsi <= 65 and momentum >= 0 else -0.5 if rsi > 70 else 0.5 if rsi < 30 else 0.0
-        votes["volume_confirmation"] = 0.25 if vol_ratio >= 1.0 and momentum >= 0 else -0.25 if vol_ratio >= 1.0 else 0.0
+        # RSI: symmetric — oversold favours BUY, overbought favours SELL, neutral is 0
+        if rsi < 30:
+            votes["rsi_14m"] = 0.75   # strongly oversold → BUY
+        elif rsi < 45:
+            votes["rsi_14m"] = 0.25   # mildly oversold → lean BUY
+        elif rsi <= 55:
+            votes["rsi_14m"] = 0.0    # neutral RSI → no vote
+        elif rsi <= 70:
+            votes["rsi_14m"] = -0.25  # mildly overbought → lean SELL
+        else:
+            votes["rsi_14m"] = -0.75  # strongly overbought → SELL
+        # MACD histogram: confirmation (weight 0.5)
+        votes["macd_hist"] = 0.5 if macd_hist > 0 else -0.5 if macd_hist < 0 else 0.0
+        # Volume confirmation: amplify only (weight 0.25)
+        votes["volume_confirmation"] = 0.25 if vol_ratio >= 1.2 else 0.0
     elif tf == "SWING":
         rsi = value("rsi_14d", 50.0)
         ma20_slope = value("ma20_slope")
@@ -306,8 +322,18 @@ def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[
 
         votes["ma20_slope"] = 1.0 if ma20_slope > 0 else -1.0 if ma20_slope < 0 else 0.0
         votes["z_score_20d"] = 0.75 if z_score > 0 else -0.75 if z_score < 0 else 0.0
-        votes["rsi_14d"] = 0.5 if 45 <= rsi <= 65 else -0.5 if rsi > 70 else 0.5 if rsi < 35 else 0.0
-        votes["volume_confirmation"] = 0.25 if volume_ratio >= 1.0 and ma20_slope >= 0 else -0.25 if volume_ratio >= 1.0 else 0.0
+        # Symmetric RSI for swing
+        if rsi < 35:
+            votes["rsi_14d"] = 0.75
+        elif rsi < 45:
+            votes["rsi_14d"] = 0.25
+        elif rsi <= 55:
+            votes["rsi_14d"] = 0.0
+        elif rsi <= 70:
+            votes["rsi_14d"] = -0.25
+        else:
+            votes["rsi_14d"] = -0.75
+        votes["volume_confirmation"] = 0.25 if volume_ratio >= 1.2 else 0.0
     else:
         rsi = value("rsi_14w", 50.0)
         ma50_slope = value("ma50_slope")
@@ -316,7 +342,16 @@ def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[
 
         votes["ma50_slope"] = 1.0 if ma50_slope > 0 else -1.0 if ma50_slope < 0 else 0.0
         votes["price_to_52w_high"] = 0.5 if price_to_high >= 0.80 else -0.5
-        votes["rsi_14w"] = 0.5 if 45 <= rsi <= 68 else -0.5 if rsi > 72 else 0.25 if rsi < 35 else 0.0
+        if rsi < 35:
+            votes["rsi_14w"] = 0.75
+        elif rsi < 45:
+            votes["rsi_14w"] = 0.25
+        elif rsi <= 55:
+            votes["rsi_14w"] = 0.0
+        elif rsi <= 68:
+            votes["rsi_14w"] = -0.25
+        else:
+            votes["rsi_14w"] = -0.75
         votes["volatility_regime"] = -0.25 if vol_ratio > 1.4 else 0.25
 
     score = sum(votes.values())

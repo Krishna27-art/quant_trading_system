@@ -77,6 +77,61 @@ class BarAggregator:
         self._history: dict[str, dict[str, deque[Bar]]] = defaultdict(
             lambda: defaultdict(lambda: deque(maxlen=self.max_bars))
         )
+        # Cache readiness flag
+        self.cache_ready: bool = False
+        self.max_bars = max_bars
+        self.redis = redis_client
+        self._lock = threading.RLock()
+        # symbol -> timeframe -> current active Bar
+        self._current_bars: dict[str, dict[str, Bar]] = defaultdict(dict)
+        # symbol -> timeframe -> deque of completed Bars
+        self._history: dict[str, dict[str, deque[Bar]]] = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=self.max_bars))
+        )
+        # Cache readiness flag
+        self.cache_ready: bool = False
+        self.max_bars = max_bars
+        self.redis = redis_client
+        self._lock = threading.RLock()
+        # symbol -> timeframe -> current active Bar
+        self._current_bars: dict[str, dict[str, Bar]] = defaultdict(dict)
+        # symbol -> timeframe -> deque of completed Bars
+        self._history: dict[str, dict[str, deque[Bar]]] = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=self.max_bars))
+        )
+        # Cache readiness flag
+        self.cache_ready: bool = False
+        self.max_bars = max_bars
+        self.redis = redis_client
+        self._lock = threading.RLock()
+        # symbol -> timeframe -> current active Bar
+        self._current_bars: dict[str, dict[str, Bar]] = defaultdict(dict)
+        # symbol -> timeframe -> deque of completed Bars
+        self._history: dict[str, dict[str, deque[Bar]]] = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=self.max_bars))
+        )
+        # Cache readiness flag
+        self.cache_ready: bool = False
+        self.max_bars = max_bars
+        self.redis = redis_client
+        self._lock = threading.RLock()
+        # symbol -> timeframe -> current active Bar
+        self._current_bars: dict[str, dict[str, Bar]] = defaultdict(dict)
+        # symbol -> timeframe -> deque of completed Bars
+        self._history: dict[str, dict[str, deque[Bar]]] = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=self.max_bars))
+        )
+        # Cache readiness flag
+        self.cache_ready: bool = False
+        self.max_bars = max_bars
+        self.redis = redis_client
+        self._lock = threading.RLock()
+        # symbol -> timeframe -> current active Bar
+        self._current_bars: dict[str, dict[str, Bar]] = defaultdict(dict)
+        # symbol -> timeframe -> deque of completed Bars
+        self._history: dict[str, dict[str, deque[Bar]]] = defaultdict(
+            lambda: defaultdict(lambda: deque(maxlen=self.max_bars))
+        )
 
     def on_tick(self, tick: TickData) -> list[Bar]:
         """
@@ -212,7 +267,7 @@ def get_default_aggregator(redis_client: Any | None = None) -> BarAggregator:
     return _default_aggregator
 
 
-def get_cached_ohlcv(symbol: str, timeframe: str, min_bars: int = 50) -> pd.DataFrame:
+
     """Module-level helper to fetch cached bars from the default aggregator."""
     return get_default_aggregator().get_cached_ohlcv(symbol, timeframe, min_bars=min_bars)
 

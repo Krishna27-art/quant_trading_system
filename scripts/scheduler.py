@@ -61,7 +61,7 @@ async def upstox_ws_connect(symbols: list[str], on_tick) -> None:
                         feed_tier=FeedTier.PRIMARY
                     )
                     on_tick(tick)
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(5.0)
         except Exception as e:
             logger.error(f"Upstox WS simulator error: {e}")
             await asyncio.sleep(5.0)
@@ -72,8 +72,8 @@ def upstox_poll_tick(symbol: str) -> TickData | None:
     global _quotes_cache, _last_fetch_time
     now = time.time()
 
-    # Fetch all symbols at once if cache is older than 2 seconds
-    if now - _last_fetch_time > 2.0 or not _quotes_cache:
+    # Fetch all symbols at once if cache is older than 5 seconds
+    if now - _last_fetch_time > 5.0 or not _quotes_cache:
         try:
             from data_platform.upstox_client import get_bulk_quotes
             from config.universe import NSE_UNIVERSE
@@ -90,21 +90,63 @@ def upstox_poll_tick(symbol: str) -> TickData | None:
         return None
 
     from data_platform.feeds.feed_manager import TickData, FeedTier
+    ts_val = quote.get("timestamp")
+    if isinstance(ts_val, str):
+        try:
+            ts_val = datetime.datetime.fromisoformat(ts_val).timestamp()
+        except ValueError:
+            ts_val = now
+    else:
+        ts_val = float(ts_val or now)
     return TickData(
         symbol=symbol,
         ltp=float(quote["last_price"] or 0.0),
         bid=float(quote.get("bid") or quote["last_price"] or 0.0),
         ask=float(quote.get("ask") or quote["last_price"] or 0.0),
-        volume=int(quote["volume"] or 0),
-        timestamp=float(quote["timestamp"] or now),
+        volume=int(quote.get("volume") or 0),
+        timestamp=ts_val,
         received_at=now,
         feed_tier=FeedTier.FALLBACK
     )
 
 
+def verify_upstox_token():
+    """Verifies that the current Upstox token is valid by making a test API call."""
+    from data_platform.upstox_client import get_bulk_quotes
+    from observability_mlops.alerting import AlertManager
+    logger.info("Verifying Upstox Access Token...")
+    try:
+        result = get_bulk_quotes(["RELIANCE"])
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Unexpected response type from Upstox: {type(result)}")
+        # Result can be empty during pre-market hours — an empty dict is still a valid authenticated response
+        logger.info(f"Upstox Access Token verified successfully (got {len(result)} quote(s)).")
+    except Exception as e:
+        error_str = str(e)
+        # Treat empty results as OK (market may be closed); only fail on auth/network errors
+        if "401" in error_str or "403" in error_str or "Unauthorized" in error_str or "invalid_token" in error_str.lower():
+            alert_mgr = AlertManager()
+            alert_mgr.send_alert(
+                title="Upstox Token Invalid/Expired",
+                message=f"FATAL: Upstox access token is invalid or expired. System cannot trade. Error: {e}",
+                level="FATAL"
+            )
+            raise RuntimeError(f"FATAL: Upstox token auth failure: {e}")
+        else:
+            # Non-auth error (network, timeout etc.) — log but don't block startup
+            logger.warning(f"Upstox token check raised non-auth error (likely market closed): {e}. Proceeding.")
+
+
 def run_feed_manager():
     """Run the unified FeedManager instead of separate feed processes."""
     logger.info("Starting Feed Manager Process with Upstox Integration...")
+
+    # Validate token before starting
+    try:
+        verify_upstox_token()
+    except Exception as e:
+        logger.error(f"Failed to start FeedManager: {e}")
+        sys.exit(1)
 
     redis_client = redis.Redis(host="localhost", port=6379, db=0)
 
@@ -117,6 +159,19 @@ def run_feed_manager():
         except Exception as e:
             logger.error(f"Failed to publish tick to Redis: {e}")
 
+    def on_failover_callback(old, new):
+        logger.warning(f"Feed failover: {old} -> {new}")
+        try:
+            from observability_mlops.alerting import AlertManager
+            alert_mgr = AlertManager()
+            alert_mgr.send_alert(
+                title="Feed Failover Active",
+                message=f"CRITICAL: Data feed downgraded from {old.name} to {new.name}.",
+                level="CRITICAL"
+            )
+        except Exception as alert_err:
+            logger.error(f"Failed to send alert on feed failover: {alert_err}")
+
     # Create a FeedManager instance
     feed_manager = FeedManager(
         ws_connect_fn=upstox_ws_connect,
@@ -125,7 +180,7 @@ def run_feed_manager():
         max_consecutive_failures=5,
         rest_poll_interval_s=2.0,
         on_tick=on_tick_callback,
-        on_failover=lambda old, new: logger.warning(f"Feed failover: {old} -> {new}"),
+        on_failover=on_failover_callback,
         redis_client=redis_client
     )
 
@@ -148,7 +203,7 @@ def run_inference_loop():
     Event-driven ML inference worker.
     Wakes on each Redis tick, runs the full generate_live_predictions pipeline,
     and results are written directly to the database by the prediction script.
-    Runs on a short sleep cycle when market is active rather than blocking on Redis.
+    Includes a watchdog heartbeat to force run every 5 minutes if no ticks arrive.
     """
     logger.info("Starting Inference Loop Process (real ML pipeline)...")
     import time as _time
@@ -167,21 +222,29 @@ def run_inference_loop():
     logger.info("Inference worker connected to Redis. Waiting for ticks...")
 
     last_id = "$"
+    last_run_time = _time.time()
     while True:
         try:
             # Block up to 60s for any new tick before triggering inference
             stream_data = redis_client.xread({"live_ticks": last_id}, block=60000, count=1)
+            should_run = False
             if stream_data:
                 for _stream_name, messages in stream_data:
                     if messages:
                         last_id = messages[-1][0].decode()
-
-                # Run the full prediction pipeline (writes to DB directly)
+                should_run = True
                 logger.info("Inference trigger: running generate_live_predictions on new tick...")
-                _run_predictions()
-                logger.info("Inference cycle complete.")
             else:
-                logger.debug("No new ticks received in 60s heartbeat window.")
+                # Heartbeat watchdog check: if no ticks in 5 mins (300s), force run
+                time_since_last_run = _time.time() - last_run_time
+                if time_since_last_run >= 300.0:
+                    should_run = True
+                    logger.warning(f"Watchdog trigger: No new ticks in {time_since_last_run:.0f}s. Force-running generate_live_predictions.")
+
+            if should_run:
+                _run_predictions()
+                last_run_time = _time.time()
+                logger.info("Inference cycle complete.")
 
         except Exception as e:
             logger.error(f"Error in inference worker: {e}")
@@ -261,7 +324,11 @@ def compile_real_market_data() -> str:
         # 2. Ingest FII / DII Flows
         fii_dii_summary = "FII/DII data unavailable"
         try:
-            analyzer = FIIDIIAnalyzer(use_mock_data=True)
+            import os
+            env = os.getenv("ENV", "LOCAL")
+            use_mock = env.upper() == "LOCAL"
+            
+            analyzer = FIIDIIAnalyzer(use_mock_data=use_mock)
             daily = analyzer.get_daily_activity()
             trend = analyzer.analyze_flow_trend(days=20)
             fii_dii_summary = (
@@ -468,7 +535,6 @@ async def outcome_resolution_job():
     logger.info("Running Daily Outcome Resolution and Calibration Job...")
     try:
         from scripts.resolve_outcomes import resolve_unresolved_predictions
-        # Run synchronous function in background thread executor to prevent blocking the event loop
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, resolve_unresolved_predictions)
         logger.info("Daily Outcome Resolution and Calibration Job completed successfully.")
@@ -476,16 +542,74 @@ async def outcome_resolution_job():
         logger.error(f"Error executing outcome resolution and calibration job: {e}")
 
 
+async def daily_token_check_job():
+    """Verify Upstox token at 8:45 AM IST — 30 min before market open."""
+    logger.info("Running pre-market Upstox token verification...")
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, verify_upstox_token)
+        logger.info("Pre-market token check passed.")
+    except Exception as e:
+        logger.error(f"Pre-market token check FAILED: {e}")
+        # Alert already sent inside verify_upstox_token
+
+
+async def zero_signals_check_job():
+    """Alert if zero new predictions exist by 10:30 AM IST — 75 min into market session."""
+    logger.info("Running zero-signals check...")
+    import zoneinfo
+    try:
+        from database.db_sync import SessionLocal
+        from database.models import Prediction
+        from observability_mlops.alerting import AlertManager
+
+        IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+        today = datetime.datetime.now(tz=IST).date()
+
+        def _count():
+            db = SessionLocal()
+            try:
+                return db.query(Prediction).filter(
+                    Prediction.created_at >= str(today)
+                ).count()
+            finally:
+                db.close()
+
+        loop = asyncio.get_running_loop()
+        count = await loop.run_in_executor(None, _count)
+        logger.info(f"Signal count for today ({today}): {count}")
+
+        if count == 0:
+            alert_mgr = AlertManager()
+            alert_mgr.send_alert(
+                title="Zero Signals Generated Today",
+                message=(
+                    f"CRITICAL: No predictions generated today ({today}) by 10:30 AM IST. "
+                    "Check FeedManager, InferenceEngine, and Upstox token."
+                ),
+                level="CRITICAL"
+            )
+    except Exception as e:
+        logger.error(f"Error in zero_signals_check_job: {e}")
+
+
 async def cron_event_loop():
-    # Pre-market job at 6:00 AM
+    # Token verification at 8:45 AM IST — 30 min before market open
+    token_check_task = asyncio.create_task(self_correcting_timer(8, 45, daily_token_check_job))
+    # Pre-market LLM intelligence job at 6:00 AM
     pre_market_task = asyncio.create_task(self_correcting_timer(6, 0, pre_market_intelligence_job))
+    # Zero-signals alert check at 10:30 AM IST (75 min into session)
+    zero_signals_task = asyncio.create_task(self_correcting_timer(10, 30, zero_signals_check_job))
     # Post-market job at 6:00 PM
     post_market_task = asyncio.create_task(self_correcting_timer(18, 0, post_trade_analysis_job))
     # Daily outcome resolution and calibration at 5:30 PM (17:30 IST)
     resolution_task = asyncio.create_task(self_correcting_timer(17, 30, outcome_resolution_job))
     # Daily snapshot pruning job at 11:00 PM
     pruning_task = asyncio.create_task(self_correcting_timer(23, 0, daily_snapshot_pruning_job))
-    await asyncio.gather(pre_market_task, post_market_task, resolution_task, pruning_task)
+    await asyncio.gather(
+        token_check_task, pre_market_task, zero_signals_task,
+        post_market_task, resolution_task, pruning_task
+    )
 
 
 # --- Master Orchestrator ---

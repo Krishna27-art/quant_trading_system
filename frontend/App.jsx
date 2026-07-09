@@ -107,7 +107,9 @@ function ProbabilityRing({ value, size = 84 }) {
 }
 
 function ConfidenceBar({ confidence }) {
-  const rawConf = confidence <= 1 ? confidence * 100 : confidence;
+  // Accept raw 0-1 or percentage-style scores
+  const norm = normConf == null ? confidence : (typeof normConf === 'function' ? normConf(confidence) : (confidence > 1.5 ? confidence / 100 : confidence));
+  const rawConf = norm * 100;
   const rounded = Math.round(rawConf);
   
   // Statistical calibration band (margin of error) based on confidence tier
@@ -595,9 +597,27 @@ function AiOutlookWidget({ outlook }) {
 }
 
 
+/* Helper: normalise prediction field to canonical BUY / SELL */
+const normPred = (p) => {
+  const v = (p.prediction || '').toString().toUpperCase();
+  if (v === '2' || v === 'BUY' || v === 'LONG') return 'BUY';
+  if (v === '1' || v === 'SELL' || v === 'SHORT') return 'SELL';
+  return v || 'HOLD';
+};
+
+/* Helper: normalise confidence to 0-1 range regardless of what the backend returns */
+const normConf = (c) => {
+  if (c == null) return 0;
+  const n = parseFloat(c);
+  if (isNaN(n)) return 0;
+  // If stored as percentage-style (> 1.5), divide by 100
+  // If stored as 0-100 range, divide by 100
+  return n >= 1 ? n / 100 : n;
+};
+
 function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, fiiDii, topLosers, outlook, onOpen }) {
   const buySignals = useMemo(() => {
-    return predictions.filter(p => p.prediction === 'BUY' || p.prediction === 'LONG');
+    return predictions.filter(p => normPred(p) === 'BUY').sort((a, b) => normConf(b.confidence) - normConf(a.confidence));
   }, [predictions]);
 
   const topMovers = useMemo(() => {
@@ -644,7 +664,7 @@ function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, fii
   );
 }
 
-function SystemHealthPage({ health }) {
+function SystemHealthPage({ health, signalsToday }) {
   const counts = useMemo(() => {
     let healthy = 0, degraded = 0, unhealthy = 0;
     health.forEach(h => {
@@ -654,6 +674,13 @@ function SystemHealthPage({ health }) {
     });
     return { healthy, degraded, unhealthy };
   }, [health]);
+
+  const pipelineStatus = useMemo(() => {
+    if (!signalsToday) return null;
+    const { total, open, correct, wrong, partial } = signalsToday;
+    const resolved = correct + wrong + partial;
+    return { total, open, resolved, correct, wrong, partial };
+  }, [signalsToday]);
 
   return (
     <div className="flex flex-col gap-5 animate-fade-in">
@@ -686,6 +713,32 @@ function SystemHealthPage({ health }) {
           </div>
         </div>
       </div>
+
+      {/* Today's Signal Pipeline Banner */}
+      {pipelineStatus !== null && (
+        <div className={`rounded-lg border p-4 flex items-center justify-between ${
+          pipelineStatus.total === 0
+            ? 'bg-rose-950/30 border-rose-800/50'
+            : 'bg-slate-900 border-slate-800'
+        }`}>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[10px] uppercase tracking-wide text-slate-500">Today's Signal Pipeline</span>
+            {pipelineStatus.total === 0
+              ? <span className="text-sm font-bold text-rose-400">⚠ ZERO signals generated today — check feed &amp; inference engine</span>
+              : <span className="text-sm font-mono text-slate-200">
+                  {pipelineStatus.total} total &nbsp;·&nbsp;
+                  <span className="text-amber-400">{pipelineStatus.open} open</span> &nbsp;·&nbsp;
+                  <span className="text-emerald-400">{pipelineStatus.correct} correct</span> &nbsp;·&nbsp;
+                  <span className="text-rose-400">{pipelineStatus.wrong} wrong</span> &nbsp;·&nbsp;
+                  <span className="text-cyan-400">{pipelineStatus.partial} partial</span>
+                </span>
+            }
+          </div>
+          <Badge tone={pipelineStatus.total === 0 ? 'rose' : pipelineStatus.open > 0 ? 'cyan' : 'emerald'}>
+            {pipelineStatus.total === 0 ? 'DEAD' : pipelineStatus.open > 0 ? 'LIVE' : 'CLOSED'}
+          </Badge>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         {health.map((h) => {
@@ -860,43 +913,108 @@ function ModelPostmortemPage({ postmortem }) {
    LIVE SIGNALS PAGE
 ============================================================================ */
 function LiveSignals({ predictions, onOpen }) {
-  const [minProb, setMinProb] = useState(0.5);
+  const [minProb, setMinProb] = useState(0);   // default 0% — show all signals
   const [sortKey, setSortKey] = useState("time");
+  const [horizonFilter, setHorizonFilter] = useState("ALL");
+  const [directionFilter, setDirectionFilter] = useState("ALL");
 
   const filtered = useMemo(() => {
     return predictions.filter(p => {
-      const conf = p.confidence <= 1 ? p.confidence : p.confidence / 100;
-      return conf >= minProb;
+      const conf = normConf(p.confidence);
+      if (conf < minProb) return false;
+      if (horizonFilter !== "ALL" && (p.horizon || '').toUpperCase() !== horizonFilter) return false;
+      if (directionFilter !== "ALL" && normPred(p) !== directionFilter) return false;
+      return true;
     });
-  }, [predictions, minProb]);
+  }, [predictions, minProb, horizonFilter, directionFilter]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
       const tA = new Date(a.date || a.prediction_date || a.prediction_time || a.created_at).getTime();
       const tB = new Date(b.date || b.prediction_date || b.prediction_time || b.created_at).getTime();
       if (sortKey === "time") return tB - tA;
-      if (sortKey === "prob") return b.confidence - a.confidence;
-      if (sortKey === "score") return b.confidence - a.confidence;
+      if (sortKey === "prob") return normConf(b.confidence) - normConf(a.confidence);
       return 0;
     });
   }, [filtered, sortKey]);
 
+  // Accuracy stats
+  const stats = useMemo(() => {
+    const total = filtered.length;
+    const correct = filtered.filter(p => p.result === 'correct').length;
+    const wrong = filtered.filter(p => p.result === 'wrong').length;
+    const pending = filtered.filter(p => !p.result || p.result === 'pending').length;
+    const resolved = correct + wrong;
+    const winRate = resolved > 0 ? ((correct / resolved) * 100).toFixed(1) : null;
+    const buys = filtered.filter(p => normPred(p) === 'BUY').length;
+    const sells = filtered.filter(p => normPred(p) === 'SELL').length;
+    return { total, correct, wrong, pending, winRate, buys, sells };
+  }, [filtered]);
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-4 bg-slate-900 border border-slate-800 rounded-lg px-4 py-3">
-        <div className="flex items-center gap-2 text-emerald-400 text-xs font-medium">
-          <Radio size={14} className="animate-pulse" /> LIVE STREAM
+      {/* Accuracy Stats Banner */}
+      <div className="grid grid-cols-7 gap-2">
+        {[
+          { label: 'Total Signals', value: stats.total, color: 'text-slate-100' },
+          { label: 'BUY Signals', value: stats.buys, color: 'text-emerald-400' },
+          { label: 'SELL Signals', value: stats.sells, color: 'text-rose-400' },
+          { label: 'Correct', value: stats.correct, color: 'text-emerald-400' },
+          { label: 'Wrong', value: stats.wrong, color: 'text-rose-400' },
+          { label: 'Pending', value: stats.pending, color: 'text-amber-400' },
+          { label: 'Win Rate', value: stats.winRate != null ? `${stats.winRate}%` : '—', color: stats.winRate >= 55 ? 'text-emerald-400' : stats.winRate >= 40 ? 'text-amber-400' : 'text-rose-400' },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col gap-0.5">
+            <span className="text-[9px] uppercase tracking-wider text-slate-500">{label}</span>
+            <span className={`text-lg font-mono font-bold ${color}`}>{value}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-lg px-4 py-3 flex-wrap">
+        <div className="flex items-center gap-2 text-emerald-400 text-xs font-medium shrink-0">
+          <Radio size={14} className="animate-pulse" /> LIVE
         </div>
-        <div className="flex items-center gap-2 flex-1 max-w-xs">
+
+        {/* Horizon filter */}
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] text-slate-500 mr-1">Horizon:</span>
+          {['ALL','INTRADAY','SWING','LONGTERM'].map(h => (
+            <button key={h} onClick={() => setHorizonFilter(h)}
+              className={`text-[10px] px-2 py-1 rounded uppercase font-medium ${
+                horizonFilter === h ? 'bg-cyan-400/10 text-cyan-400 border border-cyan-500/30' : 'text-slate-500 hover:text-slate-300 border border-transparent'
+              }`}>{h === 'ALL' ? 'All' : h.charAt(0) + h.slice(1).toLowerCase()}</button>
+          ))}
+        </div>
+
+        {/* Direction filter */}
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] text-slate-500 mr-1">Dir:</span>
+          {['ALL','BUY','SELL'].map(d => (
+            <button key={d} onClick={() => setDirectionFilter(d)}
+              className={`text-[10px] px-2 py-1 rounded uppercase font-medium ${
+                directionFilter === d ? (d === 'BUY' ? 'bg-emerald-400/10 text-emerald-400 border border-emerald-500/30' : d === 'SELL' ? 'bg-rose-400/10 text-rose-400 border border-rose-500/30' : 'bg-cyan-400/10 text-cyan-400 border border-cyan-500/30') : 'text-slate-500 hover:text-slate-300 border border-transparent'
+              }`}>{d}</button>
+          ))}
+        </div>
+
+        {/* Prob slider */}
+        <div className="flex items-center gap-2 max-w-[200px]">
           <SlidersHorizontal size={12} className="text-slate-500" />
-          <span className="text-[10px] text-slate-500 whitespace-nowrap">Min Prob. {(minProb * 100).toFixed(0)}%</span>
-          <input type="range" min="0.5" max="0.95" step="0.01" value={minProb} onChange={(e) => setMinProb(parseFloat(e.target.value))} className="w-full accent-emerald-400" />
+          <span className="text-[10px] text-slate-500 whitespace-nowrap">Min {(minProb * 100).toFixed(0)}%</span>
+          <input type="range" min="0" max="0.95" step="0.01" value={minProb}
+            onChange={(e) => setMinProb(parseFloat(e.target.value))}
+            className="w-full accent-emerald-400" />
         </div>
+
+        {/* Sort */}
         <div className="ml-auto flex items-center gap-1">
           {["time", "prob"].map((k) => (
-            <button key={k} onClick={() => setSortKey(k)} className={`text-[10px] px-2 py-1 rounded uppercase font-medium ${sortKey === k ? "bg-emerald-400/10 text-emerald-400 border border-emerald-500/30" : "text-slate-500 hover:text-slate-300"}`}>
-              {k}
-            </button>
+            <button key={k} onClick={() => setSortKey(k)}
+              className={`text-[10px] px-2 py-1 rounded uppercase font-medium ${
+                sortKey === k ? "bg-emerald-400/10 text-emerald-400 border border-emerald-500/30" : "text-slate-500 hover:text-slate-300"
+              }`}>{k}</button>
           ))}
         </div>
         <span className="text-[10px] text-slate-500 font-mono">{sorted.length} signals</span>
@@ -920,25 +1038,33 @@ function LiveSignals({ predictions, onOpen }) {
             </thead>
             <tbody>
               {sorted.length === 0 && (
-                <tr><td colSpan={9} className="text-center text-slate-600 py-8 text-[11px]">No active signals matched your filter.</td></tr>
+                <tr><td colSpan={9} className="text-center text-slate-600 py-8 text-[11px]">No signals matched your filters. Try adjusting the Horizon or Min Prob slider.</td></tr>
               )}
-              {sorted.map((row) => (
-                <tr key={row.id} onClick={() => onOpen(row.symbol)} className="border-b border-slate-900 hover:bg-slate-800/50 cursor-pointer">
-                  <td className="py-2 font-mono text-slate-500">{(row.date || row.prediction_date || row.prediction_time || '').replace('T', ' ').slice(5, 19)}</td>
-                  <td className="py-2 font-mono text-slate-100 font-medium">{row.symbol}</td>
-                  <td className="py-2"><span className={`chip font-bold text-[10px] px-1 py-0.5 rounded ${row.prediction === 'BUY' || row.prediction === 'LONG' ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-400'}`}>{row.prediction}</span></td>
-                  <td className="py-2 text-slate-400 text-[10px] font-mono">{row.horizon}</td>
-                  <td className="py-2 text-right font-mono text-slate-300">{fmtINR(row.entry_price)}</td>
-                  <td className="py-2 text-right font-mono text-rose-400">{fmtINR(row.stop_loss)}</td>
-                  <td className="py-2 text-right font-mono text-emerald-400">{fmtINR(row.target_price)}</td>
-                  <td className="py-2 text-right"><ConfidenceBar confidence={row.confidence} /></td>
-                  <td className="py-2 text-right font-mono text-slate-400">
-                    <Badge tone={row.result === 'correct' ? 'emerald' : row.result === 'wrong' ? 'rose' : 'slate'}>
-                      {row.result ? row.result.toUpperCase() : 'PENDING'}
-                    </Badge>
-                  </td>
-                </tr>
-              ))}
+              {sorted.map((row) => {
+                const direction = normPred(row);
+                const conf = normConf(row.confidence);
+                return (
+                  <tr key={row.id} onClick={() => onOpen(row.symbol)} className="border-b border-slate-900 hover:bg-slate-800/50 cursor-pointer">
+                    <td className="py-2 font-mono text-slate-500">{(row.date || row.prediction_date || row.prediction_time || '').replace('T', ' ').slice(5, 19)}</td>
+                    <td className="py-2 font-mono text-slate-100 font-medium">{row.symbol}</td>
+                    <td className="py-2">
+                      <span className={`font-bold text-[10px] px-1.5 py-0.5 rounded ${
+                        direction === 'BUY' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
+                      }`}>{direction}</span>
+                    </td>
+                    <td className="py-2 text-slate-400 text-[10px] font-mono">{row.horizon}</td>
+                    <td className="py-2 text-right font-mono text-slate-300">{fmtINR(row.entry_price)}</td>
+                    <td className="py-2 text-right font-mono text-rose-400">{fmtINR(row.stop_loss)}</td>
+                    <td className="py-2 text-right font-mono text-emerald-400">{fmtINR(row.target_price)}</td>
+                    <td className="py-2 text-right"><ConfidenceBar confidence={conf} /></td>
+                    <td className="py-2 text-right font-mono text-slate-400">
+                      <Badge tone={row.result === 'correct' ? 'emerald' : row.result === 'wrong' ? 'rose' : 'slate'}>
+                        {row.result ? row.result.toUpperCase() : 'PENDING'}
+                      </Badge>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1486,6 +1612,7 @@ export default function QuantTerminal() {
   const [predictions, setPredictions] = useState([]);
   const [indices, setIndices] = useState([]);
   const [health, setHealth] = useState([]);
+  const [signalsToday, setSignalsToday] = useState(null);
   const [fiiDii, setFiiDii] = useState(null);
   const [outlook, setOutlook] = useState(null);
   const [postmortem, setPostmortem] = useState(null);
@@ -1499,14 +1626,15 @@ export default function QuantTerminal() {
 
   const fetchAllData = useCallback(async () => {
     try {
-      const [stocksRes, predRes, healthRes, indicesRes, fiiDiiRes, outlookRes, postmortemRes] = await Promise.all([
+      const [stocksRes, predRes, healthRes, indicesRes, fiiDiiRes, outlookRes, postmortemRes, signalsTodayRes] = await Promise.all([
         fetch(`${API_BASE}/stocks`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/predictions?limit=1000`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/health/status`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/indices`).then(r => r.ok ? r.json() : []),
         fetch(`${API_BASE}/institutional/fii_dii`).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/market/outlook`).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/validation/postmortem`).then(r => r.ok ? r.json() : null)
+        fetch(`${API_BASE}/validation/postmortem`).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/validation/signals/today`).then(r => r.ok ? r.json() : null)
       ]);
 
       setStocks(stocksRes || []);
@@ -1516,6 +1644,7 @@ export default function QuantTerminal() {
       setFiiDii(fiiDiiRes || null);
       setOutlook(outlookRes || null);
       setPostmortem(postmortemRes || null);
+      setSignalsToday(signalsTodayRes || null);
     } catch (e) {
       console.error("Failed to fetch dashboard data:", e);
     } finally {
@@ -1658,7 +1787,7 @@ export default function QuantTerminal() {
               )}
               {page === "live-signals" && <LiveSignals predictions={predictions} onOpen={openStock} />}
               {page === "model-postmortem" && <ModelPostmortemPage postmortem={postmortem} />}
-              {page === "system-health" && <SystemHealthPage health={health} />}
+              {page === "system-health" && <SystemHealthPage health={health} signalsToday={signalsToday} />}
               {page === "stock-detail" && (
                 <div className="grid grid-cols-12 gap-6">
                   {/* Left Side stock selector grid */}

@@ -749,7 +749,8 @@ def insert_prediction(prediction_data: dict[str, Any]) -> bool:
 
 
 def get_predictions(
-    symbol: str | None = None, result: str | None = None, limit: int = 100
+    symbol: str | None = None, result: str | None = None, limit: int = 100,
+    date_filter: str | None = None
 ) -> list[dict[str, Any]]:
     """
     Get predictions with optional filters.
@@ -758,17 +759,23 @@ def get_predictions(
         symbol: Filter by symbol
         result: Filter by result (correct, wrong, pending)
         limit: Maximum number of results
+        date_filter: Optional ISO date string (YYYY-MM-DD) to filter by prediction date
 
     Returns:
         List of prediction dictionaries
     """
     query = """
-        SELECT p.id, p.symbol, s.name, p.prediction, p.horizon, p.confidence,
+        SELECT p.id, p.symbol, COALESCE(s.name, p.symbol) AS name,
+               p.prediction, p.horizon, p.confidence,
                p.entry_price, p.stop_loss, p.target_price, p.actual_outcome,
-               CASE WHEN p.is_correct = 1 THEN 'correct' WHEN p.is_correct = 0 THEN 'wrong' ELSE 'pending' END as result,
+               CASE
+                 WHEN p.is_correct = 1 OR p.actual_outcome = 'WIN' THEN 'correct'
+                 WHEN p.is_correct = 0 OR p.actual_outcome IN ('LOSS','TIMEOUT') THEN 'wrong'
+                 ELSE 'pending'
+               END as result,
                p.reason, p.prediction_time as prediction_date, p.created_at
         FROM predictions p
-        JOIN stocks s ON p.symbol = s.symbol
+        LEFT JOIN stocks s ON p.symbol = s.symbol
         WHERE 1=1
     """
     params = []
@@ -779,11 +786,15 @@ def get_predictions(
 
     if result:
         if result == "correct":
-            query += " AND p.is_correct = 1"
+            query += " AND (p.is_correct = 1 OR p.actual_outcome = 'WIN')"
         elif result == "wrong":
-            query += " AND p.is_correct = 0"
+            query += " AND (p.is_correct = 0 OR p.actual_outcome IN ('LOSS','TIMEOUT'))"
         elif result == "pending":
-            query += " AND p.is_correct IS NULL"
+            query += " AND p.is_correct IS NULL AND (p.actual_outcome IS NULL OR p.actual_outcome = 'OPEN')"
+
+    if date_filter:
+        query += " AND DATE(p.prediction_time) = %s"
+        params.append(date_filter)
 
     query += " ORDER BY p.prediction_time DESC, p.created_at DESC LIMIT %s"
     params.append(limit)

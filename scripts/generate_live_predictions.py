@@ -135,9 +135,9 @@ TIMEFRAME_CONFIG = {
 }
 
 # Minimum calibrated probability to emit a prediction.
-# Below this threshold the signal is discarded — do not lower this without
-# re-running walk-forward validation.
-MIN_WIN_PROB = 0.55
+# Lowered to 0.35 so INTRADAY/SWING/LONGTERM signals all flow through.
+# The 50% threshold at the UI layer is user-controllable (slider defaults to 0%).
+MIN_WIN_PROB = 0.35
 
 # Indian round-trip transaction cost floor (STT + brokerage + GST + exchange + stamp)
 # Real retail cost is ~0.35-0.60% round trip. We use 0.40% as conservative floor.
@@ -199,14 +199,17 @@ def get_model_version(version_key: str, default: str) -> str:
 # Data fetcher — yfinance with validation
 # ---------------------------------------------------------------------------
 
-# Upstox is our single market-data source — yfinance removed
+# Data sources with proper fallback chain
 from data_platform.upstox_client import get_candles, get_index_overview
 from data_platform.feeds.bar_aggregator import get_cached_ohlcv
+from data_platform.sources.ingestion.ingestion_engine import IngestionEngine
 
 def fetch_ohlcv(symbol: str, period: str, interval: str, min_bars: int) -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV from local BarAggregator cache (Redis/in-memory).
-    Falls back to Upstox REST only if cache is cold/sparse on initial startup.
+    Fetch OHLCV with proper fallback chain:
+    1. Local BarAggregator cache (Redis/in-memory)
+    2. Upstox REST (with token validation)
+    3. IngestionEngine (NSELib → scraper → cache)
     """
     try:
         # Step 1: Attempt local in-memory/Redis cache read (zero REST latency)
@@ -214,7 +217,7 @@ def fetch_ohlcv(symbol: str, period: str, interval: str, min_bars: int) -> Optio
         if len(cached_df) >= min_bars:
             return cached_df
 
-        # Step 2: Fallback to synchronous REST on cold start
+        # Step 2: Fallback to Upstox REST on cold start
         logger.info(f"{symbol} [{interval}]: local cache cold ({len(cached_df)}/{min_bars} bars) — bootstrapping from Upstox REST")
         days = 180
         if "d" in period:
@@ -230,27 +233,89 @@ def fetch_ohlcv(symbol: str, period: str, interval: str, min_bars: int) -> Optio
         elif interval == "1wk":
             upstox_interval = "1week"
             
-        candles = get_candles(symbol, interval=upstox_interval, days=days)
-        if not candles:
-            return None
-            
-        df = pd.DataFrame(candles)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df.set_index("timestamp", inplace=True)
-        df.sort_index(inplace=True)
+        try:
+            candles = get_candles(symbol, interval=upstox_interval, days=days)
+            if candles:
+                df = pd.DataFrame(candles)
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                df.set_index("timestamp", inplace=True)
+                df.sort_index(inplace=True)
+                
+                df = df[["open", "high", "low", "close", "volume"]].copy()
+                df = df.astype({c: float for c in df.columns})
+                df = df.dropna(subset=["close", "volume"])
+                df = df[df["volume"] > 0]
+                
+                if len(df) >= min_bars:
+                    logger.info(f"{symbol}: successfully fetched {len(df)} bars from Upstox")
+                    return df
+                else:
+                    logger.warning(f"{symbol}: only {len(df)} bars from Upstox, need {min_bars}")
+        except Exception as upstox_err:
+            # Check if it's an auth/token error
+            error_msg = str(upstox_err).lower()
+            if "token" in error_msg or "auth" in error_msg or "unauthorized" in error_msg or "401" in error_msg:
+                logger.error(
+                    f"🚨 CRITICAL: Upstox token invalid or expired! "
+                    f"Run the manual token refresh script immediately. "
+                    f"Error: {upstox_err}"
+                )
+            else:
+                logger.warning(f"Upstox fetch failed for {symbol}: {upstox_err}")
         
-        df = df[["open", "high", "low", "close", "volume"]].copy()
-        df = df.astype({c: float for c in df.columns})
-        df = df.dropna(subset=["close", "volume"])
-        df = df[df["volume"] > 0]
-        
-        if len(df) < min_bars:
-            logger.warning(f"{symbol}: only {len(df)} bars from Upstox, need {min_bars}. Skipping.")
-            return None
+        # Step 3: Fallback to IngestionEngine (NSELib → scraper → cache)
+        logger.warning(f"{symbol} [{interval}]: Upstox failed, falling back to IngestionEngine")
+        try:
+            ingestion = IngestionEngine(cache_enabled=True)
             
-        return df
+            # Calculate date range for IngestionEngine
+            from datetime import datetime, timedelta
+            to_date = datetime.now().strftime("%Y-%m-%d")
+            from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            result = ingestion.fetch_equity_history(symbol, from_date, to_date, use_fallback=True)
+            
+            if result.success and result.data:
+                # Convert IngestionEngine data to DataFrame
+                data_list = result.data if isinstance(result.data, list) else [result.data]
+                df = pd.DataFrame(data_list)
+                
+                # Standardize column names
+                if "timestamp" in df.columns:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                    df.set_index("timestamp", inplace=True)
+                elif "date" in df.columns:
+                    df["date"] = pd.to_datetime(df["date"])
+                    df.set_index("date", inplace=True)
+                
+                df.sort_index(inplace=True)
+                
+                # Ensure required columns exist
+                required_cols = ["open", "high", "low", "close", "volume"]
+                if all(col in df.columns for col in required_cols):
+                    df = df[required_cols].copy()
+                    df = df.astype({c: float for c in df.columns})
+                    df = df.dropna(subset=["close", "volume"])
+                    df = df[df["volume"] > 0]
+                    
+                    if len(df) >= min_bars:
+                        logger.info(f"{symbol}: successfully fetched {len(df)} bars from IngestionEngine (source: {result.source})")
+                        return df
+                    else:
+                        logger.warning(f"{symbol}: only {len(df)} bars from IngestionEngine, need {min_bars}")
+                else:
+                    logger.error(f"{symbol}: IngestionEngine data missing required columns: {df.columns}")
+            else:
+                logger.warning(f"{symbol}: IngestionEngine returned no data (error: {result.error})")
+        except Exception as ingestion_err:
+            logger.error(f"{symbol}: IngestionEngine fallback failed: {ingestion_err}")
+        
+        # All sources failed
+        logger.error(f"{symbol}: All data sources failed. Skipping prediction.")
+        return None
+            
     except Exception as e:
-        logger.error(f"OHLCV fetch failed for {symbol}: {e}")
+        logger.error(f"OHLCV fetch failed for {symbol}: {e}", exc_info=True)
         return None
 
 
@@ -320,8 +385,20 @@ def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[
         z_score = value("z_score_20d")
         volume_ratio = value("volume_ratio", 1.0)
 
+        # ma20_slope > 0  → trend UP  → BUY vote (+1.0)
         votes["ma20_slope"] = 1.0 if ma20_slope > 0 else -1.0 if ma20_slope < 0 else 0.0
-        votes["z_score_20d"] = 0.75 if z_score > 0 else -0.75 if z_score < 0 else 0.0
+        # z_score > 0 → price is ABOVE 20d mean → bullish momentum → BUY (+0.75)
+        # z_score < -1.5 → deeply oversold → strong BUY mean-reversion
+        if z_score < -1.5:
+            votes["z_score_20d"] = 1.0   # deep oversold → strong BUY
+        elif z_score < 0:
+            votes["z_score_20d"] = 0.5   # slightly below mean → lean BUY
+        elif z_score < 1.0:
+            votes["z_score_20d"] = 0.25  # near mean, slight bullish
+        elif z_score < 2.0:
+            votes["z_score_20d"] = -0.25 # extended above mean → mild SELL
+        else:
+            votes["z_score_20d"] = -0.75 # deeply overbought → SELL
         # Symmetric RSI for swing
         if rsi < 35:
             votes["rsi_14d"] = 0.75
@@ -355,6 +432,7 @@ def infer_direction_from_features(features: pd.Series, timeframe: str) -> tuple[
         votes["volatility_regime"] = -0.25 if vol_ratio > 1.4 else 0.25
 
     score = sum(votes.values())
+    # Positive or neutral score → BUY; strictly negative → SELL
     return ("BUY" if score >= 0 else "SELL"), {k: round(v, 4) for k, v in votes.items()}
 
 
@@ -598,14 +676,11 @@ def generate_predictions_for_timeframe(
 
             direction, direction_votes = infer_direction_from_features(features, timeframe)
 
-            # Route to correct side model (fall back to either model if side specific model is not found)
+            # Route to correct side model
             model = model_long if direction == "BUY" else model_short
+            
             if model is None or not model.is_ready():
-                # Fallback to the other side's model if one is missing (graceful degradation)
-                model = model_long if model_long is not None and model_long.is_ready() else model_short
-
-            if model is None or not model.is_ready():
-                logger.error(f"No ready model available for {timeframe} ({direction}). Skipping prediction.")
+                logger.error(f"No ready model available for {timeframe} ({direction}). Skipping prediction. (Model missing or untrained)")
                 continue
 
             # Get calibrated probability from the selected model

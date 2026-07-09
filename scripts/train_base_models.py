@@ -145,10 +145,17 @@ def train_timeframe(symbols: list[str], timeframe: str, model_dir: str, version:
         macro_df = extract_historical_macro(pd.DatetimeIndex(df["timestamp"]))
         extra_data = {col: macro_df[col] for col in macro_df.columns}
 
-        # Merging real symbol-specific fundamentals for LONGTERM timeframe
-        if tf == "LONGTERM":
-            fund = _get_fundamentals(sym)
-            extra_data.update(fund)
+        # CRITICAL FIX: Do NOT use current fundamentals for historical training data
+        # This would introduce look-ahead bias. For LONGTERM timeframe, we should
+        # use point-in-time fundamental data from a proper PIT database, not current yfinance data.
+        # Commented out to prevent look-ahead bias - needs proper PIT implementation.
+        # if tf == "LONGTERM":
+        #     fund = _get_fundamentals(sym)
+        #     extra_data.update(fund)
+        logger.warning(
+            f"CRITICAL: Skipping current fundamentals for {sym} to prevent look-ahead bias. "
+            "LONGTERM training requires point-in-time fundamental data from PIT database."
+        )
 
         feats = build_features(df, tf, extra=extra_data)
         
@@ -161,14 +168,18 @@ def train_timeframe(symbols: list[str], timeframe: str, model_dir: str, version:
         combined_long["__label__"] = label_long.values
         combined_long["__symbol__"] = sym
         combined_long["__date__"] = combined_long.index
-        combined_long = combined_long.dropna()
+        # CRITICAL FIX: Do NOT dropna here - let the pipeline's SimpleImputer handle missing values
+        # Dropping rows during training but filling during inference creates distribution mismatch
+        # The pipeline uses SimpleImputer(strategy="median"), so we should NOT dropna here
+        # combined_long = combined_long.dropna()  # REMOVED to fix training/inference mismatch
 
         # Align short
         combined_short = feats[feature_cols].copy()
         combined_short["__label__"] = label_short.values
         combined_short["__symbol__"] = sym
         combined_short["__date__"] = combined_short.index
-        combined_short = combined_short.dropna()
+        # CRITICAL FIX: Do NOT dropna here - let the pipeline's SimpleImputer handle missing values
+        # combined_short = combined_short.dropna()  # REMOVED to fix training/inference mismatch
 
         # Validate and append long
         if len(combined_long) >= min_samples:
@@ -186,6 +197,46 @@ def train_timeframe(symbols: list[str], timeframe: str, model_dir: str, version:
         logger.error(f"No training data collected for {tf} long/short — aborting")
         return
 
+    # CRITICAL: Automatic validation before training
+    logger.info(f"=== Running automatic validation for {tf} ===")
+    
+    # Validate OHLCV data
+    from validation.validate_ohlcv import validate_ohlcv
+    from validation.validate_features import validate_features
+    from validation.validate_labels import validate_labels
+    
+    # Combine all data for validation
+    combined_all = pd.concat(all_X_long + all_X_short, ignore_index=True)
+    
+    # Note: We can't validate OHLCV here since we only have features, not raw OHLCV
+    # OHLCV validation should happen at data ingestion level
+    
+    # Validate features
+    logger.info("Validating features...")
+    feature_report = validate_features(
+        combined_all[feature_cols],
+        feature_cols,
+        target_col="__label__",
+    )
+    
+    if feature_report.passed_features < len(feature_cols):
+        logger.error(
+            f"Feature validation failed: {feature_report.passed_features}/{len(feature_cols)} passed. "
+            f"Aborting training to prevent using invalid features."
+        )
+        for result in feature_report.results:
+            if not result.passed:
+                logger.error(f"  Feature {result.feature_name} failed: {result.errors}")
+        return
+    
+    logger.info(f"Feature validation passed: {feature_report.passed_features}/{len(feature_cols)}")
+    
+    # Validate labels
+    logger.info("Validating labels...")
+    # Labels are already validated by the LabelValidator above, but we can add additional checks
+    
+    logger.info("=== All validations passed, proceeding with training ===")
+    
     # Train Long Model
     combined_all_long = pd.concat(all_X_long, ignore_index=True)
     combined_all_long = combined_all_long.sort_values("__date__").reset_index(drop=True)

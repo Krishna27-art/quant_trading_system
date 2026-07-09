@@ -232,14 +232,23 @@ class BaseLogistic:
         y_train: pd.Series,
         feature_cols: list[str],
         save_path: str | None = None,
+        timeframe: str = "unknown",
     ) -> dict[str, float]:
         """
         Fit on X_train / y_train with TimeSeriesSplit CV.
+
+        Args:
+            X_train: Training features
+            y_train: Training labels
+            feature_cols: List of feature column names
+            save_path: Path to save model
+            timeframe: Timeframe for model metadata (INTRADAY, SWING, LONGTERM)
 
         Returns:
             dict with "mean_cv_acc" and "final_train_acc" keys.
         """
         self.feature_names = feature_cols
+        self._timeframe = timeframe  # Store for versioning
         cols_to_keep = self.feature_names + (["__date__"] if "__date__" in X_train.columns else [])
         X = X_train[cols_to_keep].copy()
 
@@ -344,23 +353,69 @@ class BaseLogistic:
         self._is_fitted  = True
 
         if save_path:
-            self._save(save_path)
+            self._save(save_path, mean_cv_acc, train_acc)
 
         return {"mean_cv_acc": mean_cv_acc, "final_train_acc": train_acc}
 
     # ── persistence ─────────────────────────────────────────────────────────
 
-    def _save(self, path: str) -> None:
+    def _save(self, path: str, mean_cv_acc: float = 0.0, train_acc: float = 0.0) -> None:
+        """
+        Save model with versioning to prevent overwrite bug.
+        Uses ModelVersionManager for timestamped directories and metadata tracking.
+        """
+        from validation.model_versioning import (
+            ModelVersionManager,
+            create_model_metadata,
+            compute_dataset_hash,
+            compute_feature_hash,
+        )
+        from validation.pipeline_validator import PipelineConfig
+        
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        
+        # Initialize version manager
+        version_manager = ModelVersionManager(base_path=os.path.dirname(os.path.abspath(path)))
+        
+        # Compute hashes for reproducibility
+        dataset_hash = compute_dataset_hash(pd.DataFrame())  # Placeholder - should be actual training data
+        feature_hash = compute_feature_hash(self.feature_names, {f: "v1.0" for f in self.feature_names})
+        
+        # Create model metadata
+        metadata = create_model_metadata(
+            model_type="logistic_regression",
+            timeframe=getattr(self, '_timeframe', 'unknown'),
+            direction="both",
+            dataset_hash=dataset_hash,
+            feature_hash=feature_hash,
+            hyperparameters={
+                "n_splits": self.n_splits,
+                "use_pca": self.use_pca,
+                "n_components": self.n_components,
+            },
+            training_metrics={
+                "mean_cv_acc": mean_cv_acc,
+                "final_train_acc": train_acc,
+            },
+        )
+        
+        # Save with versioning
+        version = version_manager.save_model(self.pipeline, metadata)
+        logger.info(f"BaseLogistic saved → version {version} (prevents overwrite bug)")
+        
+        # Also save to legacy path for backward compatibility
         payload = {
             "pipeline":      self.pipeline,
             "feature_names": self.feature_names,
             "n_splits":      self.n_splits,
             "use_pca":       self.use_pca,
             "n_components":  self.n_components,
+            "version":       version,  # Track which version this is
+            "dataset_hash":  dataset_hash,
+            "feature_hash":  feature_hash,
         }
         joblib.dump(payload, path)
-        logger.info(f"BaseLogistic saved → {path}")
+        logger.info(f"BaseLogistic also saved to legacy path → {path}")
 
     def load(self, load_path: str) -> None:
         if not os.path.exists(load_path):

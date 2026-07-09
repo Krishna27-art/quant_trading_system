@@ -233,7 +233,8 @@ def get_bulk_quotes(symbols: list[str]) -> dict[str, dict]:
     key_to_sym: dict[str, str] = {}
     keys = []
     for sym in symbols:
-        k = imap.get(sym.upper())
+        sym_clean = sym.replace(".NS", "").upper()
+        k = imap.get(sym_clean)
         if k:
             keys.append(k)
             key_to_sym[k]               = sym

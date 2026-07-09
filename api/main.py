@@ -217,6 +217,7 @@ class AIMarketOutlookResponse(BaseModel):
     watchlist: list[str]
     warnings: list[str]
     created_at: str
+    is_mock: bool = False  # Flag to indicate if data is fallback/fabricated
 
 
 class ModelPostmortemResponse(BaseModel):
@@ -956,7 +957,9 @@ def get_pre_market_analysis():
     try:
         from data_platform.pipelines.pre_market_analyzer import PreMarketAnalyzer
         
-        analyzer = PreMarketAnalyzer(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        analyzer = PreMarketAnalyzer(use_mock_data=use_mock)
         environment = analyzer.analyze_environment()
         
         return {
@@ -1017,7 +1020,9 @@ def get_institutional_watchlist():
     try:
         from data_platform.pipelines.institutional_watchlist import InstitutionalWatchlistBuilder
         
-        builder = InstitutionalWatchlistBuilder(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        builder = InstitutionalWatchlistBuilder(use_mock_data=use_mock)
         result = builder.build_watchlist()
         
         return {
@@ -1072,8 +1077,13 @@ def get_fii_dii_analysis():
     """
     try:
         from data_platform.pipelines.fii_dii_tracker import FIIDIIAnalyzer
+        import os
         
-        analyzer = FIIDIIAnalyzer(use_mock_data=True)
+        # Only use mock data in LOCAL environment; use real data in LIVE/PAPER
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        
+        analyzer = FIIDIIAnalyzer(use_mock_data=use_mock)
         daily_activity = analyzer.get_daily_activity()
         flow_trend = analyzer.analyze_flow_trend(days=20)
         sector_exposure = analyzer.get_sector_fii_exposure()
@@ -1131,7 +1141,9 @@ def get_sector_strength():
     try:
         from data_platform.pipelines.institutional_watchlist import InstitutionalWatchlistBuilder
         
-        builder = InstitutionalWatchlistBuilder(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        builder = InstitutionalWatchlistBuilder(use_mock_data=use_mock)
         result = builder.build_watchlist()
         
         return {
@@ -1168,7 +1180,9 @@ def get_swing_watchlist():
     try:
         from data_platform.pipelines.swing_watchlist import SwingWatchlistBuilder
         
-        builder = SwingWatchlistBuilder(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        builder = SwingWatchlistBuilder(use_mock_data=use_mock)
         result = builder.build_watchlist()
         summary = builder.get_watchlist_summary(result)
         
@@ -1187,7 +1201,9 @@ def get_swing_score(symbol: str):
     try:
         from data_platform.pipelines.swing_trading_scorer import SwingTradingScorer
         
-        scorer = SwingTradingScorer(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        scorer = SwingTradingScorer(use_mock_data=use_mock)
         
         # Get sector mapping from universe if available, otherwise default
         try:
@@ -1248,7 +1264,9 @@ def get_base_formation(symbol: str):
     try:
         from data_platform.pipelines.base_formation_detector import BaseFormationDetector
         
-        detector = BaseFormationDetector(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        detector = BaseFormationDetector(use_mock_data=use_mock)
         base = detector.detect_base(symbol.upper())
         
         if not base or not base.has_base:
@@ -1290,7 +1308,9 @@ def get_relative_strength(symbol: str):
     try:
         from data_platform.pipelines.swing_trading_scorer import SwingTradingScorer
         
-        scorer = SwingTradingScorer(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        scorer = SwingTradingScorer(use_mock_data=use_mock)
         rs = scorer._calculate_relative_strength(symbol.upper())
         
         if not rs:
@@ -1332,7 +1352,9 @@ def get_long_term_portfolio():
     try:
         from data_platform.pipelines.long_term_watchlist import LongTermPortfolioBuilder
         
-        builder = LongTermPortfolioBuilder(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        builder = LongTermPortfolioBuilder(use_mock_data=use_mock)
         result = builder.build_portfolio()
         summary = builder.get_portfolio_summary(result)
         
@@ -1352,7 +1374,9 @@ def get_long_term_score(symbol: str):
         from data_platform.pipelines.long_term_investing_scorer import LongTermInvestingScorer
         from config.universe import NSE_UNIVERSE
         
-        scorer = LongTermInvestingScorer(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        scorer = LongTermInvestingScorer(use_mock_data=use_mock)
         
         # Find stock in universe
         stock = next((s for s in NSE_UNIVERSE if s["symbol"] == symbol.upper()), None)
@@ -1404,7 +1428,9 @@ def get_financial_quality(symbol: str):
     try:
         from data_platform.pipelines.long_term_investing_scorer import LongTermInvestingScorer
         
-        scorer = LongTermInvestingScorer(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        scorer = LongTermInvestingScorer(use_mock_data=use_mock)
         financial = scorer._analyze_financial_quality(symbol.upper())
         
         if not financial:
@@ -1450,7 +1476,9 @@ def get_moat_analysis(symbol: str):
     try:
         from data_platform.pipelines.long_term_investing_scorer import LongTermInvestingScorer
         
-        scorer = LongTermInvestingScorer(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        scorer = LongTermInvestingScorer(use_mock_data=use_mock)
         moat = scorer._analyze_moat(symbol.upper())
         
         return {
@@ -1479,7 +1507,9 @@ def get_valuation_analysis(symbol: str):
     try:
         from data_platform.pipelines.long_term_investing_scorer import LongTermInvestingScorer
         
-        scorer = LongTermInvestingScorer(use_mock_data=True)
+        env = os.getenv("ENV", "LOCAL")
+        use_mock = env.upper() == "LOCAL"
+        scorer = LongTermInvestingScorer(use_mock_data=use_mock)
         valuation = scorer._analyze_valuation(symbol.upper())
         
         if not valuation:
@@ -1583,10 +1613,11 @@ def api_get_predictions(
     filter: str | None = Query(default=None, description="correct | wrong | pending"),
     symbol: str | None = Query(default=None),
     horizon: str | None = Query(default=None, description="INTRADAY | SWING | LONGTERM"),
-    limit: int = Query(default=200, le=1000),
+    date: str | None = Query(default=None, description="Filter by date YYYY-MM-DD"),
+    limit: int = Query(default=500, le=2000),
 ):
     try:
-        rows = get_predictions(result=filter, limit=limit)
+        rows = get_predictions(result=filter, limit=limit, date_filter=date)
 
         if symbol:
             rows = [r for r in rows if r.get("symbol", "").upper() == symbol.upper()]
@@ -1596,7 +1627,6 @@ def api_get_predictions(
         result = []
         for p in rows:
             pd_val = p.get("prediction_date") or p.get("prediction_time")
-            # Handle both datetime objects and string values
             if pd_val:
                 if isinstance(pd_val, str):
                     date_str = pd_val
@@ -1624,6 +1654,109 @@ def api_get_predictions(
         raise HTTPException(status_code=503, detail="Database unavailable")
 
 
+@app.get("/api/predictions/accuracy")
+def api_predictions_accuracy(
+    date: str | None = Query(default=None, description="YYYY-MM-DD, defaults to all-time"),
+    horizon: str | None = Query(default=None, description="INTRADAY | SWING | LONGTERM"),
+):
+    """
+    Signal accuracy breakdown: total / correct / wrong / pending counts
+    with win-rate percentage, split by horizon if requested.
+    """
+    from database.db_sync import SessionLocal
+    from database.models import Prediction
+    from sqlalchemy import func
+    import datetime as dt_module
+
+    db = SessionLocal()
+    try:
+        q = db.query(Prediction)
+        if date:
+            q = q.filter(func.date(Prediction.prediction_time) == date)
+        if horizon:
+            q = q.filter(Prediction.horizon == horizon.upper())
+
+        preds = q.all()
+
+        def _classify(p):
+            if p.is_correct is True or (p.actual_outcome or '') in ('WIN',):
+                return 'correct'
+            if p.is_correct is False or (p.actual_outcome or '') in ('LOSS', 'TIMEOUT', 'EXPIRED'):
+                return 'wrong'
+            return 'pending'
+
+        total = len(preds)
+        correct = sum(1 for p in preds if _classify(p) == 'correct')
+        wrong   = sum(1 for p in preds if _classify(p) == 'wrong')
+        pending = sum(1 for p in preds if _classify(p) == 'pending')
+        resolved = correct + wrong
+        win_rate_pct = round((correct / resolved * 100), 2) if resolved > 0 else None
+
+        # Per-horizon breakdown
+        by_horizon: dict = {}
+        for p in preds:
+            h = p.horizon or 'UNKNOWN'
+            if h not in by_horizon:
+                by_horizon[h] = {"total": 0, "correct": 0, "wrong": 0, "pending": 0}
+            by_horizon[h]["total"] += 1
+            by_horizon[h][_classify(p)] += 1
+
+        for h, d in by_horizon.items():
+            res = d["correct"] + d["wrong"]
+            d["win_rate_pct"] = round(d["correct"] / res * 100, 2) if res > 0 else None
+
+        # Per-direction breakdown
+        by_direction: dict = {}
+        for p in preds:
+            dir_val = (p.prediction or 'UNKNOWN').upper()
+            # Normalise LONG→BUY, SHORT→SELL
+            if dir_val in ('LONG', '2'):
+                dir_val = 'BUY'
+            elif dir_val in ('SHORT', '1'):
+                dir_val = 'SELL'
+            if dir_val not in by_direction:
+                by_direction[dir_val] = {"total": 0, "correct": 0, "wrong": 0, "pending": 0}
+            by_direction[dir_val]["total"] += 1
+            by_direction[dir_val][_classify(p)] += 1
+
+        return {
+            "date": date or "all_time",
+            "horizon": horizon or "ALL",
+            "total": total,
+            "correct": correct,
+            "wrong": wrong,
+            "pending": pending,
+            "resolved": resolved,
+            "win_rate_pct": win_rate_pct,
+            "by_horizon": by_horizon,
+            "by_direction": by_direction,
+        }
+    except Exception as e:
+        logger.error(f"predictions/accuracy failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/api/predictions/resolve")
+def api_resolve_outcomes(background_tasks: BackgroundTasks):
+    """
+    Trigger outcome resolution for all open predictions.
+    Runs resolve_outcomes.run() in a background thread so the API returns immediately.
+    Call this endpoint at/after market close (15:30 IST) or via the scheduler.
+    """
+    def _resolve():
+        try:
+            from scripts.resolve_outcomes import run as resolve_run
+            resolve_run()
+            logger.info("resolve_outcomes.run() completed via API trigger")
+        except Exception as exc:
+            logger.error(f"resolve_outcomes failed: {exc}", exc_info=True)
+
+    background_tasks.add_task(_resolve)
+    return {"status": "triggered", "message": "Outcome resolution started in background. Check logs for progress."}
+
+
 @app.get("/api/market/outlook", response_model=AIMarketOutlookResponse)
 def get_ai_market_outlook():
     """Retrieves the latest generated AI Market Outlook report from the database."""
@@ -1637,6 +1770,7 @@ def get_ai_market_outlook():
             import uuid
             from utils.time_utils import now_ist
             today = now_ist()
+            logger.warning("No AI Market Outlook found in database - returning fallback placeholder")
             return AIMarketOutlookResponse(
                 id=str(uuid.uuid4()),
                 date=today.date().isoformat(),
@@ -1647,7 +1781,8 @@ def get_ai_market_outlook():
                 top_themes=["Earnings Beats", "FII Cash Inflows"],
                 watchlist=["TCS", "RELIANCE"],
                 warnings=["RBI Rate Decision upcoming", "Global Nasdaq weakness"],
-                created_at=today.isoformat()
+                created_at=today.isoformat(),
+                is_mock=True  # Explicitly flag this as fallback data
             )
             
         try:
@@ -1680,7 +1815,8 @@ def get_ai_market_outlook():
             top_themes=themes,
             watchlist=wl,
             warnings=warns,
-            created_at=outlook.created_at.isoformat()
+            created_at=outlook.created_at.isoformat(),
+            is_mock=False  # Real data from database
         )
     except Exception as e:
         logger.error(f"Failed to fetch AI market outlook: {e}", exc_info=True)

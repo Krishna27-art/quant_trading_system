@@ -113,7 +113,10 @@ class PreTradeChecker:
                 logger.critical(
                     "🚨 PreTradeChecker encountered more than 3 exceptions in 5 minutes! Triggering global kill switch."
                 )
-                execute_kill_switch(dry_run=False)
+                try:
+                    execute_kill_switch(dry_run=False)
+                except Exception as ks_err:
+                    logger.error(f"Failed to execute global kill switch: {ks_err}")
 
     # ------------------------------------------------------------------
     # Data feeds

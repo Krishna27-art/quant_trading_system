@@ -397,16 +397,26 @@ def run_multi_process_topology(
 
 
 def main():
+    # Tracks the active execution mode so the global exception hook knows whether
+    # a real kill switch (live capital) or a dry-run (backtest/paper) is appropriate.
+    # Defaults to "backtest" — the safest assumption — until args are parsed below.
+    current_execution_mode = {"mode": "backtest"}
+
     # Setup global exception hook to trigger the emergency kill switch
     def global_exception_hook(exctype, value, traceback):
+        mode = current_execution_mode["mode"]
+        is_live = mode == "live"
         logger.critical(
-            "🚨 Unhandled global exception caught! Triggering emergency kill switch.",
+            f"🚨 Unhandled global exception caught in '{mode}' mode! "
+            f"Triggering emergency kill switch (dry_run={not is_live}).",
             exc_info=(exctype, value, traceback),
         )
         from risk_governance.pre_trade.kill_switch import execute_kill_switch
 
         try:
-            execute_kill_switch(dry_run=False)
+            # Only fire a REAL kill switch (liquidating live positions) when actually
+            # running live. Backtest/paper exceptions must never trigger real liquidation (BUG-SE-01).
+            execute_kill_switch(dry_run=not is_live)
         except Exception as e:
             logger.error(f"Failed to execute kill switch from excepthook: {e}")
         # Call the original excepthook
@@ -445,6 +455,9 @@ def main():
     args = parser.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",")]
+
+    # Update the exception hook's view of the current mode now that args are parsed.
+    current_execution_mode["mode"] = args.mode
 
     logger.info(f"Starting Quant Engine in {args.mode.upper()} mode for symbols: {symbols}")
 

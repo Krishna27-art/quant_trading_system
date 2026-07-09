@@ -49,9 +49,9 @@ class DatabaseRole(str, Enum):
 
 
 # Database connection pools
-postgresql_primary_pool: pool.SimpleConnectionPool | None = None
-postgresql_replica_pool: pool.SimpleConnectionPool | None = None
-postgresql_failover_pool: pool.SimpleConnectionPool | None = None  # Failover target
+postgresql_primary_pool: pool.ThreadedConnectionPool | None = None
+postgresql_replica_pool: pool.ThreadedConnectionPool | None = None
+postgresql_failover_pool: pool.ThreadedConnectionPool | None = None  # Failover target
 clickhouse_client = None
 duckdb_connection = None
 
@@ -88,7 +88,7 @@ def initialize_pool(min_connections: int = 1, max_connections: int = 20) -> bool
         if db_url.startswith("sqlite"):
             logger.info("Using SQLite database for primary")
         else:
-            postgresql_primary_pool = pool.SimpleConnectionPool(
+            postgresql_primary_pool = pool.ThreadedConnectionPool(
                 min_connections, max_connections, db_url
             )
 
@@ -96,7 +96,7 @@ def initialize_pool(min_connections: int = 1, max_connections: int = 20) -> bool
         replica_url = get_database_url(DatabaseRole.REPLICA)
         logger.info(f"Initializing replica database pool: {replica_url}")
         if not replica_url.startswith("sqlite"):
-            postgresql_replica_pool = pool.SimpleConnectionPool(
+            postgresql_replica_pool = pool.ThreadedConnectionPool(
                 min_connections, max_connections, replica_url
             )
 
@@ -104,7 +104,7 @@ def initialize_pool(min_connections: int = 1, max_connections: int = 20) -> bool
         failover_url = get_database_url(DatabaseRole.FAILOVER)
         logger.info(f"Initializing failover database pool: {failover_url}")
         if not failover_url.startswith("sqlite"):
-            postgresql_failover_pool = pool.SimpleConnectionPool(
+            postgresql_failover_pool = pool.ThreadedConnectionPool(
                 min_connections, max_connections, failover_url
             )
 

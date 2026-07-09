@@ -246,7 +246,7 @@ CREATE TRIGGER log_order_state_transition_trigger BEFORE UPDATE ON order_ledger
     FOR EACH ROW EXECUTE FUNCTION log_order_state_transition();
 
 -- Function to reconstruct position from trades
-CREATE OR REPLACE FUNCTION reconstruct_position(p_symbol VARCHAR(32), p_portfolio_id VARCHAR(64 DEFAULT NULL)
+CREATE OR REPLACE FUNCTION reconstruct_position(p_symbol VARCHAR(32), p_portfolio_id VARCHAR(64) DEFAULT NULL)
 RETURNS TABLE (
     quantity BIGINT,
     avg_cost DECIMAL(18, 4),

@@ -33,12 +33,7 @@ def create_access_token(data: dict, expires_delta: timedelta = timedelta(hours=1
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    env = os.getenv("ENV", "LOCAL")
-    with open("/Users/pandu/Desktop/quant/auth_debug.log", "a") as f:
-        f.write(f"DEBUG: env={repr(env)}, credentials={repr(credentials)}\n")
     if not credentials:
-        if env.upper() == "LOCAL_DEV":
-            return {"sub": "dev_bypass"}
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(credentials.credentials, _jwt_secret(), algorithms=[ALGORITHM])

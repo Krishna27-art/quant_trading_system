@@ -77,6 +77,18 @@ export class LiveSocket {
 
   close() {
     this.closedByUser = true
-    this.ws?.close()
+    if (this.ws) {
+      // Nullify listeners to prevent close/error events from firing on manual close
+      this.ws.onopen = null
+      this.ws.onmessage = null
+      this.ws.onerror = null
+      this.ws.onclose = null
+      try {
+        this.ws.close()
+      } catch (e) {
+        // Ignore errors during close
+      }
+      this.ws = null
+    }
   }
 }

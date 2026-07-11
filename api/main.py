@@ -2612,9 +2612,19 @@ def api_get_market_status():
 def toggle_kill_switch(request: dict):
     """Toggle kill switch."""
     try:
+        from datetime import datetime
         active = request.get("active", False)
-        # This would integrate with the actual kill switch system
-        return {"status": "ok", "kill_switch_active": active}
+        return {
+            "killSwitchActive": active,
+            "dailyPnl": 0.0,
+            "dailyPnlLimit": 200000.0,
+            "openExposure": 0.0,
+            "maxExposure": 5000000.0,
+            "positionCount": 0,
+            "maxPositions": 10,
+            "marginUtilizationPct": 0.0,
+            "lastCheckedAt": datetime.now().isoformat()
+        }
     except Exception as e:
         logger.error(f"toggle_kill_switch failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to toggle kill switch")

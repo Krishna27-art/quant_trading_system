@@ -78,15 +78,24 @@ export class LiveSocket {
   close() {
     this.closedByUser = true
     if (this.ws) {
-      // Nullify listeners to prevent close/error events from firing on manual close
-      this.ws.onopen = null
-      this.ws.onmessage = null
-      this.ws.onerror = null
-      this.ws.onclose = null
-      try {
-        this.ws.close()
-      } catch (e) {
-        // Ignore errors during close
+      const ws = this.ws
+      // Nullify event handlers to prevent reconnecting/error states from triggering
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
+
+      if (ws.readyState === WebSocket.CONNECTING) {
+        // Defer closing until connection is established to avoid the browser console warning
+        ws.onopen = () => {
+          try {
+            ws.close()
+          } catch {}
+        }
+      } else if (ws.readyState === WebSocket.OPEN) {
+        ws.onopen = null
+        try {
+          ws.close()
+        } catch {}
       }
       this.ws = null
     }

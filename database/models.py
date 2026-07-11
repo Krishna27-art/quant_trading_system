@@ -1,6 +1,7 @@
-from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String, Text, UniqueConstraint, Date, Float
+from sqlalchemy import Boolean, Column, DateTime, Integer, Numeric, String, Text, UniqueConstraint, Date, Float, func, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import synonym
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -127,5 +128,162 @@ class ModelPostmortem(Base):
     analysis_json = Column(Text, nullable=False)
     recommendations = Column(Text)
     created_at = Column(DateTime, nullable=False)
+
+
+class Feature(Base):
+    """
+    Feature Laboratory - Main feature storage table.
+    
+    Stores computed feature values for every symbol and timestamp.
+    One row = one stock + one day + one feature value.
+    """
+    __tablename__ = "features"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    feature_name = Column(String(100), nullable=False, index=True)
+    feature_category = Column(String(50), nullable=False, index=True)
+    feature_version = Column(String(20), default="1.0")
+    feature_value = Column(Float, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    # Uniqueness constraint: one value per (symbol, date, feature_name, version)
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol", "date", "feature_name", "feature_version",
+            name="uq_feature_symbol_date_name_version",
+        ),
+        Index('ix_features_symbol_date', 'symbol', 'date'),
+        Index('ix_features_feature_name_date', 'feature_name', 'date'),
+    )
+
+
+class FeatureMetadata(Base):
+    """
+    Feature Laboratory - Feature metadata registry.
+    
+    Stores documentation and metadata for every feature definition.
+    """
+    __tablename__ = "feature_metadata"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feature_name = Column(String(100), unique=True, nullable=False, index=True)
+    feature_category = Column(String(50), nullable=False)
+    description = Column(Text, nullable=False)
+    timeframe = Column(String(10), nullable=False)
+    required_columns = Column(Text, nullable=False)  # JSON array
+    output_range = Column(String(50))
+    version = Column(String(20), default="1.0")
+    author = Column(String(100), default="system")
+    computation_method = Column(Text)
+    assumptions = Column(Text)
+    limitations = Column(Text)
+    references = Column(Text)
+    is_enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    last_updated = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+
+class FeatureQuality(Base):
+    """
+    Feature Laboratory - Feature quality scores.
+    
+    Tracks predictive quality of each feature over time.
+    """
+    __tablename__ = "feature_quality"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feature_name = Column(String(100), nullable=False, index=True)
+    feature_version = Column(String(20), default="1.0")
+    quality_score = Column(Float, nullable=False)  # 0-100
+    win_rate = Column(Float)
+    average_return = Column(Float)
+    sharpe_ratio = Column(Float)
+    sortino_ratio = Column(Float)
+    max_drawdown = Column(Float)
+    profit_factor = Column(Float)
+    sample_size = Column(Integer, nullable=False)
+    evaluation_period_start = Column(Date, nullable=False)
+    evaluation_period_end = Column(Date, nullable=False)
+    computed_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    __table_args__ = (
+        UniqueConstraint(
+            "feature_name", "feature_version", "evaluation_period_end",
+            name="uq_feature_quality_version_period",
+        ),
+    )
+
+
+class FeatureImportance(Base):
+    """
+    Feature Laboratory - ML feature importance tracking.
+    
+    Stores feature importance scores from ML models.
+    """
+    __tablename__ = "feature_importance"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_name = Column(String(100), nullable=False, index=True)
+    model_version = Column(String(50), nullable=False)
+    feature_name = Column(String(100), nullable=False)
+    importance_score = Column(Float, nullable=False)
+    rank = Column(Integer)
+    computed_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    __table_args__ = (
+        UniqueConstraint(
+            "model_name", "model_version", "feature_name",
+            name="uq_feature_importance_model_feature",
+        ),
+    )
+
+
+class FeatureCorrelation(Base):
+    """
+    Feature Laboratory - Feature correlation matrix.
+    
+    Stores pairwise correlations between features to identify redundancy.
+    """
+    __tablename__ = "feature_correlation"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feature_1 = Column(String(100), nullable=False, index=True)
+    feature_2 = Column(String(100), nullable=False, index=True)
+    correlation_coefficient = Column(Float, nullable=False)
+    p_value = Column(Float)
+    sample_size = Column(Integer)
+    computed_at = Column(DateTime, nullable=False, default=datetime.now)
+    
+    __table_args__ = (
+        UniqueConstraint(
+            "feature_1", "feature_2",
+            name="uq_feature_correlation_pair",
+        ),
+    )
+
+
+class FeatureCombination(Base):
+    """
+    Feature Laboratory - Feature combinations for alpha research.
+    
+    Stores tested feature combinations and their performance.
+    """
+    __tablename__ = "feature_combinations"
+
+    id = Column(String(50), primary_key=True)
+    combination_name = Column(String(100), nullable=False)
+    features = Column(Text, nullable=False)  # JSON array of feature names
+    conditions = Column(Text, nullable=False)  # JSON array of conditions
+    win_rate = Column(Float)
+    average_return = Column(Float)
+    sharpe_ratio = Column(Float)
+    max_drawdown = Column(Float)
+    sample_size = Column(Integer)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    last_tested = Column(DateTime)
+    notes = Column(Text)
 
 

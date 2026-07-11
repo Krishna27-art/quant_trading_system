@@ -664,7 +664,7 @@ function Dashboard({ stocks, predictions, health, sectors, breadth, metrics, fii
   );
 }
 
-function SystemHealthPage({ health, signalsToday }) {
+function SystemHealthPage({ health, signalsToday, postmortem, onRunDebugger }) {
   const counts = useMemo(() => {
     let healthy = 0, degraded = 0, unhealthy = 0;
     health.forEach(h => {
@@ -788,6 +788,95 @@ function SystemHealthPage({ health, signalsToday }) {
           );
         })}
       </div>
+
+      {/* AI Signal Debugger Section */}
+      <Card title="AI Prediction Debugger & Feedback" className="w-full">
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-400">
+              Last Analysis Run: {postmortem ? new Date(postmortem.created_at).toLocaleString() : "Never"}
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch(`${API_BASE}/validation/run_postmortem`, { method: 'POST' });
+                  if (res.ok) {
+                    alert("AI Signal Debugger triggered successfully!");
+                    if (onRunDebugger) onRunDebugger();
+                  } else {
+                    alert("Failed to run AI Signal Debugger.");
+                  }
+                } catch (err) {
+                  console.error(err);
+                  alert("Error running debugger.");
+                }
+              }}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-slate-100 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            >
+              <BrainCircuit size={14} />
+              Run AI Debugger
+            </button>
+          </div>
+
+          {postmortem ? (
+            <div className="flex flex-col gap-3 border-t border-slate-800 pt-3">
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-slate-950 p-2.5 rounded border border-slate-800/40">
+                  <div className="text-[10px] text-slate-500 uppercase">Win Rate</div>
+                  <div className="text-lg font-mono font-bold text-emerald-400">
+                    {(postmortem.win_rate * 100).toFixed(1)}%
+                  </div>
+                </div>
+                <div className="bg-slate-950 p-2.5 rounded border border-slate-800/40">
+                  <div className="text-[10px] text-slate-500 uppercase">Resolved Trades</div>
+                  <div className="text-lg font-mono font-bold text-slate-200">
+                    {postmortem.total_trades}
+                  </div>
+                </div>
+                <div className="bg-slate-950 p-2.5 rounded border border-slate-800/40">
+                  <div className="text-[10px] text-slate-500 uppercase">Losses</div>
+                  <div className="text-lg font-mono font-bold text-rose-400">
+                    {postmortem.total_losses}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-950 p-3 rounded border border-slate-800/40">
+                <h4 className="text-xs font-bold text-slate-300 mb-1 flex items-center gap-1">
+                  <Activity size={12} className="text-indigo-400" />
+                  AI Narrative Analysis
+                </h4>
+                <p className="text-xs text-slate-400 leading-relaxed font-sans whitespace-pre-line">
+                  {postmortem.analysis_json ? (() => {
+                    try {
+                      const parsed = JSON.parse(postmortem.analysis_json);
+                      return parsed.narrative || postmortem.narrative;
+                    } catch(e) {
+                      return postmortem.narrative;
+                    }
+                  })() : postmortem.narrative}
+                </p>
+              </div>
+
+              {postmortem.recommendations && (
+                <div className="bg-amber-950/20 p-3 rounded border border-amber-900/30">
+                  <h4 className="text-xs font-bold text-amber-400 mb-1 flex items-center gap-1">
+                    <ShieldAlert size={12} />
+                    Actionable Tuning Recommendations
+                  </h4>
+                  <p className="text-xs text-amber-300/80 leading-relaxed font-mono whitespace-pre-line">
+                    {postmortem.recommendations}
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-6 text-xs text-slate-500 border-t border-slate-800 pt-3">
+              No post-mortem reports found. Run the debugger to generate analysis.
+            </div>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }
@@ -1787,7 +1876,14 @@ export default function QuantTerminal() {
               )}
               {page === "live-signals" && <LiveSignals predictions={predictions} onOpen={openStock} />}
               {page === "model-postmortem" && <ModelPostmortemPage postmortem={postmortem} />}
-              {page === "system-health" && <SystemHealthPage health={health} signalsToday={signalsToday} />}
+              {page === "system-health" && (
+                <SystemHealthPage
+                  health={health}
+                  signalsToday={signalsToday}
+                  postmortem={postmortem}
+                  onRunDebugger={fetchAllData}
+                />
+              )}
               {page === "stock-detail" && (
                 <div className="grid grid-cols-12 gap-6">
                   {/* Left Side stock selector grid */}

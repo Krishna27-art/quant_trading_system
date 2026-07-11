@@ -75,6 +75,7 @@ from database.connection import (
     get_stock_price,
     initialize_pool,
 )
+from feature_layer.feature_dashboard import router as feature_router
 from utils.time_utils import now_ist
 
 # ---------------------------------------------------------------------------
@@ -88,6 +89,7 @@ app = FastAPI(
 )
 
 app.include_router(auth_router, prefix="/api/auth")
+app.include_router(feature_router)
 
 allowed_origins = [
     "http://localhost:3000",

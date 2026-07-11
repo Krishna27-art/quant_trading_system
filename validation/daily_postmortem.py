@@ -59,7 +59,20 @@ def run_daily_postmortem(db: Session, target_date: Optional[date] = None) -> Opt
                 day_preds.append(p)
 
     if not day_preds:
-        logger.warning(f"No resolved predictions found for exit date {target_date}. Skipping post-mortem.")
+        # Dynamic fallback: if no predictions on target_date, find the most recent exit date from all resolved predictions
+        exit_dates = [p.exit_time.date() if isinstance(p.exit_time, datetime) else p.exit_time for p in predictions if p.exit_time]
+        if exit_dates:
+            target_date = max(exit_dates)
+            logger.info(f"No predictions resolved on requested date. Falling back to latest available exit date: {target_date}")
+            day_preds = []
+            for p in predictions:
+                if p.exit_time:
+                    exit_date = p.exit_time.date() if isinstance(p.exit_time, datetime) else p.exit_time
+                    if exit_date == target_date:
+                        day_preds.append(p)
+
+    if not day_preds:
+        logger.warning(f"No resolved predictions found. Skipping post-mortem.")
         return None
 
     wins = [p for p in day_preds if p.actual_outcome == "WIN"]

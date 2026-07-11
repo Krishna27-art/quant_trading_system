@@ -58,3 +58,13 @@ except Exception as e:
     logger.error(f"Failed to initialize synchronous database engine: {e}")
     engine = None
     SessionLocal = None
+
+
+def get_db():
+    if SessionLocal is None:
+        raise RuntimeError("Database not initialized")
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

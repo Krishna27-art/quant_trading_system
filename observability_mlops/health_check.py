@@ -114,7 +114,12 @@ class HealthChecker:
             "sqlite:///quant.db",
         )
         self.broker_health_url = broker_health_url or os.getenv("BROKER_HEALTH_URL", "")
-        self.data_feed_staleness_threshold_s = data_feed_staleness_threshold_s
+        # Adjust data feed lag threshold for local development to prevent false-positives
+        env = os.getenv("ENV", "PRODUCTION").upper()
+        if env in ("LOCAL", "LOCAL_DEV"):
+            self.data_feed_staleness_threshold_s = 86400.0 * 7
+        else:
+            self.data_feed_staleness_threshold_s = data_feed_staleness_threshold_s
         self.disk_usage_warning_pct = disk_usage_warning_pct
         self.disk_usage_critical_pct = disk_usage_critical_pct
         self.memory_warning_pct = memory_warning_pct

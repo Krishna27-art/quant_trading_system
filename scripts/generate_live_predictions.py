@@ -944,6 +944,24 @@ def run():
                         expiry_time=_expiry_time(sig.metadata["timeframe"], now),
                     )
                     _store.store(record, db)
+                    # Publish signal to Redis oms_signals stream for the OMS process to consume
+                    try:
+                        import redis
+                        r_client = redis.Redis(host="localhost", port=6379, db=0)
+                        signal_payload = {
+                            "symbol": sig.symbol,
+                            "signal": "BUY" if sig.prediction == 2 else "SELL",
+                            "win_probability": str(sig.win_probability),
+                            "target_price": str(sig.target_price),
+                            "stop_loss": str(sig.stop_loss),
+                            "entry_price": str(sig.metadata["entry_price"]),
+                            "timeframe": sig.metadata["timeframe"],
+                            "timestamp": str(now.timestamp())
+                        }
+                        r_client.xadd("oms_signals", signal_payload)
+                        logger.info(f"Published signal for {sig.symbol} to oms_signals Redis stream.")
+                    except Exception as red_err:
+                        logger.error(f"Failed to publish signal to Redis: {red_err}")
                 except Exception as ex:
                     logger.error(f"Prediction validation failed for {sig.symbol}: {ex}")
 

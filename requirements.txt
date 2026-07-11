@@ -775,3 +775,6 @@ zipp==4.1.0
     # via importlib-metadata
 zstandard==0.25.0
     # via clickhouse-connect
+pandas-ta==0.3.14b0
+seaborn==0.13.2
+

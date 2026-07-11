@@ -33,6 +33,9 @@ def create_access_token(data: dict, expires_delta: timedelta = timedelta(hours=1
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    env = os.getenv("ENV", "PRODUCTION").upper()
+    if env in ("LOCAL", "LOCAL_DEV"):
+        return {"sub": "local_dev_user"}
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:

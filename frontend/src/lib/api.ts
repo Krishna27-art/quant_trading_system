@@ -62,20 +62,33 @@ export const api = {
       }
     })
   },
-  getPositions: async (): Promise<Position[]> => (await http.get(endpoints.positions)).data,
+  getPositions: async (): Promise<Position[]> => {
+    const { data: raw } = await http.get<any[]>(endpoints.positions)
+    return raw.map((p) => ({
+      id: p.id || p.position_id || `${p.symbol}-${Math.random()}`,
+      symbol: p.symbol,
+      side: p.side || (p.direction === 'LONG' ? 'BUY' : 'SELL'),
+      quantity: p.quantity ?? p.qty ?? 0,
+      avgEntryPrice: p.avgEntryPrice ?? p.avg_price ?? p.average_price ?? 0,
+      lastPrice: p.lastPrice ?? p.ltp ?? p.last_price ?? 0,
+      unrealizedPnl: p.unrealizedPnl ?? p.unrealized_pnl ?? p.pnl ?? 0,
+      unrealizedPnlPct: p.unrealizedPnlPct ?? p.unrealized_pnl_pct ?? 0,
+      openedAt: p.openedAt || p.opened_at || p.timestamp || p.created_at || new Date().toISOString()
+    }))
+  },
   getRiskSnapshot: async (): Promise<RiskSnapshot> => {
     const { data: raw } = await http.get(endpoints.risk)
     return {
-      killSwitchActive: raw.killSwitchActive ?? false,
-      dailyPnl: raw.dailyPnl ?? 0,
-      dailyPnlLimit: raw.dailyPnlLimit ?? 200000,
-      openExposure: raw.openExposure ?? (raw.marginUsed ?? 0),
-      maxExposure: raw.maxExposure ?? (raw.marginAvailable ?? 10000000),
-      positionCount: raw.positionCount ?? (raw.openPositions ?? 0),
-      maxPositions: raw.maxPositions ?? 10,
-      marginUtilizationPct: raw.marginUtilizationPct ?? 
+      killSwitchActive: raw.killSwitchActive ?? raw.kill_switch_active ?? false,
+      dailyPnl: raw.dailyPnl ?? raw.daily_pnl ?? 0,
+      dailyPnlLimit: raw.dailyPnlLimit ?? raw.daily_pnl_limit ?? 200000,
+      openExposure: raw.openExposure ?? raw.open_exposure ?? raw.marginUsed ?? 0,
+      maxExposure: raw.maxExposure ?? raw.max_exposure ?? raw.marginAvailable ?? 10000000,
+      positionCount: raw.positionCount ?? raw.position_count ?? raw.openPositions ?? 0,
+      maxPositions: raw.maxPositions ?? raw.max_positions ?? 10,
+      marginUtilizationPct: raw.marginUtilizationPct ?? raw.margin_utilization_pct ?? 
         (raw.marginAvailable > 0 ? (raw.marginUsed / (raw.marginUsed + raw.marginAvailable)) * 100 : 0),
-      lastCheckedAt: raw.lastCheckedAt || new Date().toISOString(),
+      lastCheckedAt: raw.lastCheckedAt || raw.last_checked_at || new Date().toISOString(),
     }
   },
   getPerformanceSummary: async (): Promise<PerformanceSummary> => {
@@ -101,11 +114,11 @@ export const api = {
       }
     }
     return {
-      totalReturn: raw.totalPnl ?? 0,
-      winRate: raw.winRate ?? 0,
-      sharpe: raw.sharpeRatio ?? 0,
-      maxDrawdownPct: raw.maxDrawdownPct ?? 0,
-      totalTrades: raw.totalTrades ?? 0,
+      totalReturn: raw.totalReturn ?? raw.totalPnl ?? raw.total_pnl ?? 0,
+      winRate: raw.winRate ?? raw.win_rate ?? 0,
+      sharpe: raw.sharpe ?? raw.sharpeRatio ?? raw.sharpe_ratio ?? 0,
+      maxDrawdownPct: raw.maxDrawdownPct ?? raw.max_drawdown_pct ?? 0,
+      totalTrades: raw.totalTrades ?? raw.total_trades ?? 0,
       equityCurve: curve
     }
   },
@@ -113,11 +126,11 @@ export const api = {
   getMarketStatus: async (): Promise<MarketStatus> => {
     const { data: raw } = await http.get(endpoints.marketStatus)
     return {
-      isOpen: raw.is_open ?? false,
+      isOpen: raw.isOpen ?? raw.is_open ?? false,
       session: raw.session === 'OPEN' ? 'REGULAR' : (raw.session || 'CLOSED'),
-      nifty50Change: raw.nifty50Change ?? 0.42,
-      sensexChange: raw.sensexChange ?? 0.38,
-      asOf: raw.current_ist || raw.asOf || new Date().toISOString(),
+      nifty50Change: raw.nifty50Change ?? raw.nifty_50_change ?? 0.42,
+      sensexChange: raw.sensexChange ?? raw.sensex_change ?? 0.38,
+      asOf: raw.current_ist || raw.asOf || raw.as_of || new Date().toISOString(),
     }
   },
   toggleKillSwitch: async (active: boolean): Promise<RiskSnapshot> =>

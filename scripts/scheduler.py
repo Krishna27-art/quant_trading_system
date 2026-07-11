@@ -218,7 +218,7 @@ def run_inference_loop():
         logger.error(f"Failed to import generate_live_predictions: {e}. Inference loop cannot start.")
         return
 
-    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    redis_client = redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
     logger.info("Inference worker connected to Redis. Waiting for ticks...")
 
     last_id = "$"
@@ -253,7 +253,7 @@ def run_inference_loop():
 
 def run_execution_loop():
     logger.info("Starting Execution (OMS) Process...")
-    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    redis_client = redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
     logger.info("OMS worker connected to Redis. Monitoring oms_signals stream...")
 
     from portfolio_execution.oms import OrderManagementSystem, OrderSide, OrderType, OrderStatus

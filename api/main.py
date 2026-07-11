@@ -1899,6 +1899,25 @@ def api_get_model_postmortem():
         db.close()
 
 
+@app.post("/api/validation/run_postmortem")
+def api_run_model_postmortem(background_tasks: BackgroundTasks):
+    """Triggers the model post-mortem analysis manually."""
+    from database.db_sync import SessionLocal
+    from validation.daily_postmortem import run_daily_postmortem
+    
+    def task_wrapper():
+        db = SessionLocal()
+        try:
+            run_daily_postmortem(db)
+        except Exception as e:
+            logger.error(f"Manual daily postmortem run failed: {e}", exc_info=True)
+        finally:
+            db.close()
+            
+    background_tasks.add_task(task_wrapper)
+    return {"status": "ok", "message": "Model post-mortem analysis triggered."}
+
+
 
 @app.get("/api/validation/signals/today")
 def api_get_signals_today():

@@ -955,7 +955,7 @@ def run():
                     # Publish signal to Redis oms_signals stream for the OMS process to consume
                     try:
                         import redis
-                        r_client = redis.Redis(host="localhost", port=6379, db=0)
+                        r_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
                         signal_payload = {
                             "symbol": sig.symbol,
                             "signal": "BUY" if sig.prediction == 2 else "SELL",

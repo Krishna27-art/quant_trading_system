@@ -17,7 +17,7 @@ class HuggingFaceClient(BaseLLMClient):
     def __init__(self, model_id: str = "Qwen/Qwen3-32B"):
         self.hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_ACCESS_TOCKEN") or "MOCK_KEY_FOR_TESTING"
         self.model_id = model_id
-        self.api_url = f"https://api-inference.huggingface.co/models/{model_id}"
+        self.api_url = "https://router.huggingface.co/hf-inference/v1/chat/completions"
 
     def _mock_response(self, system_prompt: str, user_prompt: str) -> str:
         env = os.getenv("ENV", "LOCAL")
@@ -63,15 +63,15 @@ class HuggingFaceClient(BaseLLMClient):
             logger.warning("Using MOCK HuggingFace response because no valid HF token is found.")
             return self._mock_response(system_prompt, user_prompt)
 
-        # Build prompt format
-        full_prompt = f"<system>\n{system_prompt}\n</system>\n<user>\n{user_prompt}\n</user>\n<assistant>\n"
+        # Build prompt format using chat completions structure
         payload = {
-            "inputs": full_prompt,
-            "parameters": {
-                "max_new_tokens": 1024,
-                "return_full_text": False,
-                "temperature": 0.2
-            }
+            "model": self.model_id,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.2
         }
 
         try:
@@ -89,10 +89,8 @@ class HuggingFaceClient(BaseLLMClient):
                 res_json = json.loads(res_bytes.decode("utf-8"))
                 
                 # Check response format
-                if isinstance(res_json, list) and len(res_json) > 0:
-                    text = res_json[0].get("generated_text", "")
-                elif isinstance(res_json, dict):
-                    text = res_json.get("generated_text", "")
+                if "choices" in res_json and len(res_json["choices"]) > 0:
+                    text = res_json["choices"][0].get("message", {}).get("content", "")
                 else:
                     text = str(res_json)
 

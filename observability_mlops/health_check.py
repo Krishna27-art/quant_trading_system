@@ -326,7 +326,7 @@ class HealthChecker:
         # Check Redis reachability first
         try:
             import redis
-            r = redis.Redis(host="localhost", port=6379, db=0, socket_connect_timeout=2)
+            r = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), socket_connect_timeout=2)
             r.ping()  # Will raise if Redis not running
         except Exception as exc:
             return ComponentHealth(
@@ -338,7 +338,7 @@ class HealthChecker:
         # Redis is up — check live_ticks stream
         try:
             import redis
-            r = redis.Redis(host="localhost", port=6379, db=0)
+            r = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
             last = r.xrevrange("live_ticks", count=1)
             if not last:
                 return ComponentHealth(

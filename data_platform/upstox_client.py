@@ -124,11 +124,13 @@ def _get(path: str, params: dict | None = None, timeout: int = 12) -> dict:
     url = f"{UPSTOX_BASE}{path}"
     try:
         r = requests.get(url, headers=_auth(), params=params or {}, timeout=timeout)
+        if r.status_code == 401:
+            raise RuntimeError("401 Unauthorized - Upstox token is invalid or expired")
         data = r.json()
         if data.get("status") != "success":
             errs = data.get("errors", [{}])
             msg  = errs[0].get("message", "unknown") if errs else "unknown"
-            logger.warning(f"Upstox error {path}: {msg}")
+            raise RuntimeError(f"Upstox API error on {path}: {msg}")
         return data
     except Exception as e:
         logger.error(f"Upstox request failed {path}: {e}")

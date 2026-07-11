@@ -2,13 +2,16 @@ import os
 import sys
 
 import pandas as pd
+import numpy as np
 
 # Ensure project root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-
-from prediction_intelligence.lightgbm_ranker import LightGBMRankerModel
-from prediction_intelligence.signal_adapter import from_lightgbm_ranker_output
+from data_platform.feature_store.macro import extract_historical_macro
+from prediction_intelligence.base_logistic import build_features as canonical_build_features
+from prediction_intelligence.base_logistic import build_label, SWING_FEATURES
+from prediction_intelligence.meta_ensemble import MetaEnsemble
+from prediction_intelligence.signal_adapter import SignalPrediction
 from research_platform.backtesting.engine import (
     BacktestConfig,
     BacktestingEngine,
@@ -36,26 +39,32 @@ def load_data():
 
 def feature_engineering(df):
     logger.info("Generating Machine Learning features...")
-    df["returns_1d"] = df.groupby("symbol")["close"].pct_change(1)
-    df["momentum_5d"] = df.groupby("symbol")["close"].pct_change(5)
-    df["momentum_10d"] = df.groupby("symbol")["close"].pct_change(10)
-    df["volatility_10d"] = (
-        df.groupby("symbol")["returns_1d"].rolling(10).std().reset_index(0, drop=True)
-    )
-
+    # Generate canonical features
+    timestamps = df["date"].unique()
+    macro_df = extract_historical_macro(pd.DatetimeIndex(timestamps))
+    df_merged = df.merge(macro_df, left_on="date", right_index=True, how="left")
+    
+    all_feats = []
+    for sym, group in df_merged.groupby("symbol"):
+        feats = canonical_build_features(group, timeframe="SWING")
+        feats["symbol"] = sym
+        feats["date"] = group["date"].values
+        feats["close"] = group["close"].values
+        feats["adjusted_close"] = group["adjusted_close"].values
+        feats["high"] = group["high"].values
+        feats["low"] = group["low"].values
+        feats["open"] = group["open"].values
+        feats["volume"] = group["volume"].values
+        all_feats.append(feats)
+        
+    df_feats = pd.concat(all_feats, ignore_index=True)
+    
     # Calculate ATR (Average True Range) for volatility-based stop/target sizing
-    df["high_low"] = df["high"] - df["low"]
-    df["high_close"] = (df["high"] - df["close"]).abs()
-    df["low_close"] = (df["low"] - df["close"]).abs()
-    df["tr"] = df[["high_low", "high_close", "low_close"]].max(axis=1)
-    df["atr_14d"] = df.groupby("symbol")["tr"].rolling(14).mean().reset_index(0, drop=True)
-    df["atr_pct"] = df["atr_14d"] / df["close"]
-
-    # Target label: forward 1-day return
-    df["fwd_return"] = df.groupby("symbol")["returns_1d"].shift(-1)
-
-    df = df.dropna()
-    return df
+    df_feats["tr"] = df_feats["high"] - df_feats["low"]
+    df_feats["atr_14d"] = df_feats.groupby("symbol")["tr"].rolling(14).mean().reset_index(0, drop=True)
+    df_feats["atr_pct"] = df_feats["atr_14d"] / df_feats["close"]
+    
+    return df_feats.dropna()
 
 
 def run():
@@ -73,32 +82,34 @@ def run():
 
     logger.info(f"Training set: {len(train_df)} rows. Test set: {len(test_df)} rows.")
 
-    features = ["returns_1d", "momentum_5d", "momentum_10d", "volatility_10d"]
+    # Build labels for training
+    all_train_with_labels = []
+    for sym, group in train_df.groupby("symbol"):
+        orig_group = df[(df["symbol"] == sym) & (df["date"] >= group["date"].min()) & (df["date"] <= group["date"].max())].sort_values("date")
+        label_long = build_label(orig_group.set_index("date", drop=False), "SWING", side="long")
+        
+        group = group.copy()
+        group["__label__"] = label_long.reindex(group["date"]).values
+        all_train_with_labels.append(group)
+        
+    train_df_labeled = pd.concat(all_train_with_labels, ignore_index=True).dropna()
 
-    model = LightGBMRankerModel()
+    # Train production MetaEnsemble model
+    model = MetaEnsemble(timeframe="SWING", feature_cols=SWING_FEATURES)
+    X_train = train_df_labeled[SWING_FEATURES]
+    y_train = train_df_labeled["__label__"].astype(int)
 
-    # Set up index for the ranker model train function
-    # It expects multiindex (date, symbol)
-    train_df.set_index(["date", "symbol"], inplace=True)
-
-    # Train the model and calibrate Win %
-    logger.info("Training and calibrating LightGBM Ranker...")
-    model.train(
-        features_df=train_df[features],
-        labels_df=train_df["fwd_return"],  # Needed for binary wins
-        feature_columns=features,
-        params=None,
-    )
+    logger.info("Training MetaEnsemble model...")
+    model.fit(X_train, y_train)
 
     # Predict on test set
-    test_df.set_index(["date", "symbol"], inplace=True)
     logger.info("Generating out-of-sample predictions...")
-    preds_df = model.predict(test_df[features])
+    X_test = test_df[SWING_FEATURES]
+    proba_long = model.predict_proba(X_test)[:, 1]
 
     # Re-attach columns
-    test_df = test_df.reset_index()
-    test_df["alpha_score"] = preds_df["alpha_score"].values
-    test_df["win_probability"] = preds_df["win_probability"].values
+    test_df = test_df.reset_index(drop=True)
+    test_df["win_probability_long"] = proba_long
 
     # Generate Trading Signals for the Engine
     # Track currently held positions to emit explicit sell signals when they drop from top-N
@@ -110,7 +121,7 @@ def run():
     test_df = test_df.sort_values("date")
 
     for _date, group in test_df.groupby("date"):
-        top_picks = group.nlargest(2, "alpha_score")
+        top_picks = group.nlargest(2, "win_probability_long")
         top_symbols = set(top_picks["symbol"].values)
 
         # Emit sell signals (prediction=0) for symbols that dropped from top-N
@@ -120,19 +131,24 @@ def run():
                 symbol_row = group[group["symbol"] == symbol]
                 if not symbol_row.empty:
                     row = symbol_row.iloc[0]
-                    # Create a sell signal with prediction=0
-                    sell_signal = from_lightgbm_ranker_output(row.to_dict(), row["date"])
-                    # Override prediction to 0 (sell)
-                    sell_signal.prediction = 0
-                    signals.append(sell_signal)
+                    signals.append(SignalPrediction(
+                        date=row["date"],
+                        symbol=row["symbol"],
+                        prediction=0,
+                        confidence=float(row["win_probability_long"]),
+                        win_probability=float(row["win_probability_long"]),
+                    ))
 
         # Emit buy signals (prediction=2) for new top picks
         for _, row in top_picks.iterrows():
-            if row["win_probability"] > 0.50:  # Only take trades with positive expected value
-                buy_signal = from_lightgbm_ranker_output(row.to_dict(), row["date"])
-                # Ensure prediction is 2 (buy)
-                buy_signal.prediction = 2
-                signals.append(buy_signal)
+            if row["win_probability_long"] > 0.50:  # Only take trades with positive expected value
+                signals.append(SignalPrediction(
+                    date=row["date"],
+                    symbol=row["symbol"],
+                    prediction=2,
+                    confidence=float(row["win_probability_long"]),
+                    win_probability=float(row["win_probability_long"]),
+                ))
 
         # Update current positions
         current_positions = top_symbols

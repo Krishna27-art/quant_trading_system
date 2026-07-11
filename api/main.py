@@ -463,7 +463,6 @@ def api_get_indices():
 def get_stocks(
     sector: str | None = Query(default=None),
     search: str | None = Query(default=None),
-    current_user: dict = Depends(verify_token),
 ):
     try:
         prices = get_latest_prices()

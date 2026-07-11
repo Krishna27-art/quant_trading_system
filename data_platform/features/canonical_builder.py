@@ -21,8 +21,6 @@ LONGTERM_FEATURES = [
     "rsi_14w",
     "vol_ratio",
     "price_to_52w_high",
-    "pe_ratio",
-    "debt_to_equity",
     "vix",
 ]
 
@@ -171,8 +169,6 @@ class CanonicalFeatureBuilder:
             rolling_max = close.rolling(_52w_window).max()
 
             out["price_to_52w_high"] = close / rolling_max.replace(0, np.nan)
-            out["pe_ratio"] = _get_extra_col("pe_ratio", 20.0)
-            out["debt_to_equity"] = _get_extra_col("debt_to_equity", 0.5)
             out["vix"] = _get_extra_col("vix", 15.0, alt_keys=["vix_level", "^INDIAVIX"])
 
         else:

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import redis
 
-from agents.llm_client import llm
+from llm.router import llm
 from data_platform.feeds.feed_manager import FeedManager, TickData
 from utils.structured_logger import get_structured_logger
 

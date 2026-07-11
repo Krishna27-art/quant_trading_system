@@ -634,7 +634,15 @@ def generate_predictions_for_timeframe(
 
             # Check if features have NaNs or need imputation
             if features[FEATURE_COLS].isna().any():
-                imputer = ModelRegistry().get_imputer(timeframe)
+                # Extract version suffix (e.g. "v1" from "META_SWING_v1_long")
+                version_suffix = None
+                if model_version:
+                    parts = model_version.split("_")
+                    for p in parts:
+                        if p.startswith("v") and len(p) > 1 and p[1:].isdigit():
+                            version_suffix = p
+                            break
+                imputer = ModelRegistry().get_imputer(timeframe, version=version_suffix)
                 if imputer is not None:
                     try:
                         imputed_vals = imputer.transform(features[FEATURE_COLS].to_frame().T)[0]

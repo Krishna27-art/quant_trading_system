@@ -275,7 +275,7 @@ def train_timeframe(symbols: list[str], timeframe: str, model_dir: str, version:
 
     # Fit Imputer
     imputer = SimpleImputer(strategy="median").fit(X_long)
-    ModelRegistry(model_dir=model_dir).save_imputer(tf, imputer)
+    ModelRegistry(model_dir=model_dir).save_imputer(tf, imputer, version=version)
 
     # Register in singleton
     ModelRegistry().register(f"META_{tf}_{version}_long", tf, model_long)

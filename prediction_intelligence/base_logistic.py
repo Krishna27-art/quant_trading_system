@@ -728,22 +728,33 @@ class ModelRegistry:
             return SWING_FEATURES
         return LONGTERM_FEATURES
 
-    def save_imputer(self, timeframe: str, imputer: Any) -> str:
+    def save_imputer(self, timeframe: str, imputer: Any, version: str | None = None) -> str:
         os.makedirs(self._model_dir, exist_ok=True)
+        if version:
+            v_path = os.path.join(self._model_dir, f"imputer_{timeframe.lower()}_{version}.joblib")
+            joblib.dump(imputer, v_path)
+            logger.info(f"Versioned imputer for {timeframe} ({version}) saved -> {v_path}")
         path = os.path.join(self._model_dir, f"imputer_{timeframe.lower()}.joblib")
         joblib.dump(imputer, path)
         self._imputers[timeframe.upper()] = imputer
-        logger.info(f"Imputer for {timeframe} saved -> {path}")
+        logger.info(f"Default imputer for {timeframe} saved -> {path}")
         return path
 
-    def get_imputer(self, timeframe: str) -> Any | None:
+    def get_imputer(self, timeframe: str, version: str | None = None) -> Any | None:
         tf = timeframe.upper()
-        if tf in self._imputers:
+        if tf in self._imputers and not version:
             return self._imputers[tf]
+        if version:
+            path = os.path.join(self._model_dir, f"imputer_{tf.lower()}_{version}.joblib")
+            if os.path.exists(path):
+                imputer = joblib.load(path)
+                logger.info(f"Imputer for {tf} ({version}) loaded from {path}")
+                return imputer
         path = os.path.join(self._model_dir, f"imputer_{tf.lower()}.joblib")
         if os.path.exists(path):
             imputer = joblib.load(path)
-            self._imputers[tf] = imputer
+            if not version:
+                self._imputers[tf] = imputer
             logger.info(f"Imputer for {tf} loaded from {path}")
             return imputer
         return None

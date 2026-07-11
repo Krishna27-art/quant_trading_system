@@ -26,7 +26,7 @@ def api_client():
 @pytest.mark.integration
 def test_jwt_auth_endpoints(api_client):
     # 1. Access protected endpoint without token -> should get 401
-    resp = api_client.get("/api/stocks")
+    resp = api_client.get("/api/paper/trades")
     assert resp.status_code == 401
 
     # 2. Access public health check -> should get 200

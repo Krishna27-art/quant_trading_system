@@ -13,7 +13,7 @@ ALGORITHM = "HS256"
 
 def _jwt_secret() -> str:
     secret = os.getenv("JWT_SECRET_KEY")
-    if not secret or secret == "super-secret-institutional-key":
+    if not secret or secret in ("super-secret-institutional-key", "replace_with_256_bit_random_secret"):
         raise RuntimeError("JWT_SECRET_KEY must be set to a non-default secret")
     return secret
 
@@ -33,9 +33,6 @@ def create_access_token(data: dict, expires_delta: timedelta = timedelta(hours=1
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    env = os.getenv("ENV", "PRODUCTION").upper()
-    if env in ("LOCAL", "LOCAL_DEV"):
-        return {"sub": "local_dev_user"}
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:

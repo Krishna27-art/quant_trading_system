@@ -32,3 +32,6 @@ class LLMRouter(BaseLLMClient):
     async def ask_claude_async(self, system_prompt: str, user_prompt: str) -> str:
         """Alias for ask_async() to avoid breaking existing callers."""
         return await self.ask_async(system_prompt, user_prompt)
+
+# Singleton instance
+llm = LLMRouter()

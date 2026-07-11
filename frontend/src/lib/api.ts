@@ -38,23 +38,27 @@ export const api = {
   getSignals: async (): Promise<Signal[]> => {
     const { data: raw } = await http.get<any[]>(endpoints.signals)
     return raw.map((r, i) => {
-      let confidence = typeof r.confidence === 'number' ? r.confidence : 0.5
+      // Safely parse confidence/winProbability
+      let rawConf = r.winProbability ?? r.confidence ?? r.win_probability
+      let confidence = typeof rawConf === 'number' ? rawConf : 0.5
       if (confidence > 1.0) {
         confidence = 1 / (1 + Math.exp(-confidence))
       } else if (confidence < 0.0) {
         confidence = 0.0
       }
+
+      // Map to Signal interface supporting both backend schemas
       return {
-        id: r.id || `${r.symbol}-${r.timestamp || i}`,
+        id: r.id || `${r.symbol}-${r.generatedAt || r.timestamp || r.prediction_date || i}`,
         symbol: r.symbol,
-        side: r.prediction === 'LONG' ? 'BUY' : 'SELL',
-        strategy: r.horizon || 'Composite',
+        side: r.side || (r.prediction === 'LONG' ? 'BUY' : 'SELL'),
+        strategy: r.strategy || r.horizon || 'Composite',
         winProbability: confidence,
-        entryPrice: r.entry_price || 0,
-        stopLoss: r.stop_loss || 0,
-        target: r.target_price || 0,
-        generatedAt: r.timestamp || new Date().toISOString(),
-        status: 'ACTIVE'
+        entryPrice: r.entryPrice ?? r.entry_price ?? 0,
+        stopLoss: r.stopLoss ?? r.stop_loss ?? 0,
+        target: r.target ?? r.target_price ?? 0,
+        generatedAt: r.generatedAt || r.prediction_date || r.timestamp || new Date().toISOString(),
+        status: r.status || 'ACTIVE'
       }
     })
   },

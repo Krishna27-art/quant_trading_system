@@ -35,7 +35,25 @@ export function useSignals() {
     socketRef.current = socket
     socket.connect()
 
-    const unsubscribe = socket.on<Signal>('signal.new', (signal) => {
+    const unsubscribe = socket.on<any>('signal.new', (rawSignal) => {
+      let confidence = typeof rawSignal.confidence === 'number' ? rawSignal.confidence : 0.5
+      if (confidence > 1.0) {
+        confidence = 1 / (1 + Math.exp(-confidence))
+      } else if (confidence < 0.0) {
+        confidence = 0.0
+      }
+      const signal: Signal = {
+        id: rawSignal.id || `${rawSignal.symbol}-${rawSignal.date || Date.now()}`,
+        symbol: rawSignal.symbol,
+        side: rawSignal.prediction === 'LONG' ? 'BUY' : 'SELL',
+        strategy: rawSignal.horizon || 'Composite',
+        winProbability: confidence,
+        entryPrice: rawSignal.entry_price || 0,
+        stopLoss: rawSignal.stop_loss || 0,
+        target: rawSignal.target_price || 0,
+        generatedAt: rawSignal.date || new Date().toISOString(),
+        status: 'ACTIVE'
+      }
       pushLiveSignal(signal)
       queryClient.setQueryData<Signal[]>(['signals'], (prev) => {
         if (!prev) return [signal]

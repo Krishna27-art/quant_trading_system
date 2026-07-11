@@ -14,7 +14,8 @@ export function MarketPulse() {
     return <div className="h-8 shrink-0 border-b border-ink-600 bg-ink-850" />
   }
 
-  const loopItems = [...signals, ...signals]
+  const slicedSignals = signals.slice(0, 15)
+  const loopItems = [...slicedSignals, ...slicedSignals]
 
   return (
     <div className="h-8 shrink-0 border-b border-ink-600 bg-ink-850 overflow-hidden relative">

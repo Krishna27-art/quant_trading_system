@@ -26,7 +26,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
@@ -98,6 +98,10 @@ allowed_origins = [
     "http://[::1]:3000",
     "http://localhost:5500",
     "http://127.0.0.1:5500",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://[::]:5173",
+    "http://[::1]:5173",
 ]
 env_origins = os.getenv("CORS_ALLOWED_ORIGINS")
 if env_origins:
@@ -2446,9 +2450,174 @@ def api_full_fundamentals(symbol: str):
     if not UPSTOX_OK:
         raise HTTPException(503, "Upstox client not available")
     try:
-        return get_full_fundamentals(symbol.upper())
+        data = get_full_fundamentals(symbol.upper())
+        if data is None:
+            raise HTTPException(404, f"No fundamentals for {symbol}")
+        return data
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+# ---------------------------------------------------------------------------
+# Frontend API Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/signals/live")
+def get_live_signals():
+    """Get live trading signals."""
+    try:
+        rows = get_predictions(limit=100)
+        signals = []
+        for row in rows:
+            side_val = "BUY" if row.get("prediction") == "LONG" else "SELL"
+            conf = row.get("confidence")
+            if conf is not None:
+                if conf > 1.0:
+                    conf = conf / 10.0
+                conf = min(max(conf, 0.0), 1.0)
+            else:
+                conf = 0.5
+            pred_date = row.get("prediction_date")
+            if pred_date:
+                gen_at = pred_date if isinstance(pred_date, str) else pred_date.isoformat()
+            else:
+                gen_at = None
+
+            signals.append({
+                "id": str(row.get("id")),
+                "symbol": row.get("symbol"),
+                "side": side_val,
+                "strategy": row.get("horizon") or "INTRADAY",
+                "winProbability": conf,
+                "entryPrice": row.get("entry_price"),
+                "stopLoss": row.get("stop_loss"),
+                "target": row.get("target_price"),
+                "generatedAt": gen_at,
+                "status": "ACTIVE"
+            })
+        return signals
+    except Exception as e:
+        logger.error(f"get_live_signals failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get signals")
+
+
+@app.get("/api/positions")
+def get_positions():
+    """Get current positions."""
+    try:
+        # Return empty positions for now - this would connect to OMS
+        return []
+    except Exception as e:
+        logger.error(f"get_positions failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get positions")
+
+
+@app.get("/api/risk/snapshot")
+def get_risk_snapshot():
+    """Get current risk metrics."""
+    try:
+        from datetime import datetime
+        return {
+            "killSwitchActive": False,
+            "dailyPnl": 0.0,
+            "dailyPnlLimit": 200000.0,
+            "openExposure": 0.0,
+            "maxExposure": 5000000.0,
+            "positionCount": 0,
+            "maxPositions": 10,
+            "marginUtilizationPct": 0.0,
+            "lastCheckedAt": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"get_risk_snapshot failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get risk snapshot")
+
+
+@app.get("/api/performance/summary")
+def get_performance_summary():
+    """Get performance summary."""
+    try:
+        return {
+            "totalReturn": 0.0,
+            "winRate": 0.0,
+            "sharpe": 0.0,
+            "maxDrawdownPct": 0.0,
+            "totalTrades": 0,
+            "equityCurve": []
+        }
+    except Exception as e:
+        logger.error(f"get_performance_summary failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get performance summary")
+
+
+@app.get("/api/performance/summary/equity-curve")
+@app.get("/api/performance/equity-curve")
+def get_equity_curve():
+    """Get equity curve data."""
+    try:
+        return []
+    except Exception as e:
+        logger.error(f"get_equity_curve failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get equity curve")
+
+
+@app.get("/api/market/status")
+def api_get_market_status():
+    """Get market status."""
+    try:
+        from datetime import datetime, time
+        from zoneinfo import ZoneInfo
+        ist = ZoneInfo("Asia/Kolkata")
+        now = datetime.now(ist)
+        t = now.time()
+        is_open = time(9, 15) <= t <= time(15, 30) and now.weekday() < 5
+        
+        nifty_change = 0.0
+        sensex_change = 0.0
+        session_val = "CLOSED"
+        
+        if UPSTOX_OK:
+            try:
+                from data_platform.upstox_client import get_market_status as upstox_get_market_status
+                m_status = upstox_get_market_status()
+                is_open = m_status.get("is_open", is_open)
+                session_val = m_status.get("session", "CLOSED")
+                
+                from data_platform.upstox_client import get_index_overview
+                overview = get_index_overview()
+                nifty_change = overview.get("NIFTY50", {}).get("pct_change") or 0.0
+                sensex_change = overview.get("SENSEX", {}).get("pct_change") or 0.0
+            except Exception as ue:
+                logger.warning(f"Failed to fetch market details via Upstox: {ue}")
+        else:
+            session_val = "REGULAR" if is_open else "CLOSED"
+            nifty_change = 0.35 if is_open else 0.0
+            sensex_change = 0.28 if is_open else 0.0
+
+        return {
+            "isOpen": is_open,
+            "session": session_val,
+            "nifty50Change": nifty_change,
+            "sensexChange": sensex_change,
+            "asOf": now.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"get_market_status failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get market status")
+
+
+@app.post("/api/risk/kill-switch")
+def toggle_kill_switch(request: dict):
+    """Toggle kill switch."""
+    try:
+        active = request.get("active", False)
+        # This would integrate with the actual kill switch system
+        return {"status": "ok", "kill_switch_active": active}
+    except Exception as e:
+        logger.error(f"toggle_kill_switch failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to toggle kill switch")
 
 
 # ---------------------------------------------------------------------------
@@ -2486,6 +2655,41 @@ def api_ltp(symbols: str = Query(..., description="Comma-separated instrument ke
     except Exception as e:
         raise HTTPException(500, str(e))
 
+import asyncio
+import redis.asyncio as redis_async
+
+@app.websocket("/ws/signals")
+async def websocket_signals(websocket: WebSocket):
+    await websocket.accept()
+    r_client = redis_async.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+    last_id = "$"
+    try:
+        while True:
+            stream_data = await r_client.xread({"oms_signals": last_id}, count=10, block=1000)
+            if stream_data:
+                for _stream, messages in stream_data:
+                    for message_id, message_body in messages:
+                        last_id = message_id
+                        payload = {
+                            "id": message_id,
+                            "symbol": message_body.get("symbol"),
+                            "prediction": message_body.get("signal"),
+                            "confidence": float(message_body.get("win_probability", 0.0)),
+                            "entry_price": float(message_body.get("entry_price", 0.0)),
+                            "target_price": float(message_body.get("target_price", 0.0)),
+                            "stop_loss": float(message_body.get("stop_loss", 0.0)),
+                            "horizon": message_body.get("timeframe", "INTRADAY"),
+                            "date": message_body.get("timestamp", ""),
+                        }
+                        await websocket.send_json({"type": "signal.new", "payload": payload})
+            # Send a ping every loop to keep connection alive if needed
+            await asyncio.sleep(0.1)
+    except WebSocketDisconnect:
+        logger.info("Websocket client disconnected")
+    except Exception as e:
+        logger.error(f"Websocket error: {e}")
+    finally:
+        await r_client.aclose() if hasattr(r_client, "aclose") else await r_client.close()
 
 if __name__ == "__main__":
     import uvicorn

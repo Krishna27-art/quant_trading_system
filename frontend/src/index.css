@@ -43,6 +43,6 @@
     @apply font-mono tabular-nums;
   }
   .panel {
-    @apply bg-ink-800 border border-ink-600 rounded-lg shadow-panel;
+    @apply bg-ink-800/60 backdrop-blur-md border border-ink-600/50 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] hover:shadow-[0_8px_32px_rgba(0,0,0,0.6)] transition-all duration-300;
   }
 }

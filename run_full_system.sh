@@ -9,17 +9,17 @@ echo "=================================================="
 mkdir -p logs
 
 # 1. Port Cleanup (Foolproof port cleaning)
-echo "[1/4] Cleaning up any old processes on ports 8000 and 3000..."
+echo "[1/4] Cleaning up any old processes on ports 8000 and 5173..."
 PID_8000=$(lsof -t -i:8000 || true)
 if [ ! -z "$PID_8000" ]; then
     echo "Killing processes on port 8000: $PID_8000"
     kill -9 $PID_8000 2>/dev/null || true
 fi
 
-PID_3000=$(lsof -t -i:3000 || true)
-if [ ! -z "$PID_3000" ]; then
-    echo "Killing processes on port 3000: $PID_3000"
-    kill -9 $PID_3000 2>/dev/null || true
+PID_5173=$(lsof -t -i:5173 || true)
+if [ ! -z "$PID_5173" ]; then
+    echo "Killing processes on port 5173: $PID_5173"
+    kill -9 $PID_5173 2>/dev/null || true
 fi
 
 # 2. Daily Upstox Access Token Helper
@@ -73,8 +73,8 @@ python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 > logs/backend.log 2>&
 API_PID=$!
 
 # Start Frontend UI Server
-echo "Starting Frontend UI on port 3000..."
-python -m http.server 3000 --directory frontend/dist > logs/frontend.log 2>&1 &
+echo "Starting Frontend UI on port 5173..."
+(cd frontend && npm run dev > ../logs/frontend.log 2>&1 &) &
 FRONTEND_PID=$!
 
 # Run prediction outcome resolver once immediately on startup
@@ -98,7 +98,7 @@ echo ""
 echo "--------------------------------------------------"
 echo "System successfully launched!"
 echo "Backend API:  http://localhost:8000"
-echo "Frontend UI:  http://localhost:3000"
+echo "Frontend UI:  http://localhost:5173"
 echo "Backend Logs:  logs/backend.log"
 echo "Frontend Logs: logs/frontend.log"
 echo "Resolver Logs: logs/outcome_resolver.log"

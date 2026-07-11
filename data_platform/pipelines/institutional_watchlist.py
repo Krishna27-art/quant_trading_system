@@ -446,7 +446,7 @@ class InstitutionalWatchlistBuilder:
                 price_vs_sma50=random.uniform(-10.0, 10.0),
                 sector_strength_rank=random.randint(1, 15),
                 sector_strength_score=random.uniform(-2.0, 2.0),
-                news_sentiment=random.choice(["positive", "negative", "neutral"]),
+                news_sentiment="neutral",  # TODO: wire to get_stock_news() sentiment analysis
                 news_impact_score=random.uniform(-0.8, 0.8),
                 futures_oi_change_pct=random.uniform(-10.0, 10.0) if random.random() > 0.3 else None,
                 options_oi_change_pct=random.uniform(-15.0, 15.0) if random.random() > 0.3 else None,

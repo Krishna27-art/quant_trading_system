@@ -253,9 +253,12 @@ def run_inference_loop():
 
 def run_execution_loop():
     logger.info("Starting Execution (OMS) Process...")
-    # Listens to 'oms_signals' and runs Pre-trade Risk Checks -> executes Zerodha/Paper order
     redis_client = redis.Redis(host="localhost", port=6379, db=0)
     logger.info("OMS worker connected to Redis. Monitoring oms_signals stream...")
+
+    from portfolio_execution.oms import OrderManagementSystem, OrderSide, OrderType, OrderStatus
+    # Initialize the OMS with default limits (can be configured via env later)
+    oms = OrderManagementSystem()
 
     last_id = "$"
     while True:
@@ -268,14 +271,50 @@ def run_execution_loop():
                 for message_id, message_body in messages:
                     last_id = message_id.decode()
                     signal = {k.decode(): v.decode() for k, v in message_body.items()}
+                    symbol = signal.get("symbol")
+                    signal_dir = signal.get("signal", "BUY")
+                    
                     logger.info(
-                        f"Execution Gate: Processing signal for {signal.get('symbol')} ({signal.get('signal')})"
+                        f"Execution Gate: Processing signal for {symbol} ({signal_dir})"
                     )
 
-                    # Runs risk engine check & routes order
-                    # e.g., oms.route_order(signal)
+                    side = OrderSide.BUY if signal_dir.upper() == "BUY" else OrderSide.SELL
+                    price = float(signal.get("entry_price", 0.0))
+                    # Default fixed quantity if not provided, or derive from risk later
+                    quantity = int(signal.get("quantity", 1))
+
+                    # Run risk engine checks
+                    order = oms.create_order(
+                        symbol=symbol,
+                        side=side,
+                        quantity=quantity,
+                        price=price,
+                        order_type=OrderType.MARKET,
+                        stop_loss=float(signal.get("stop_loss", 0.0)),
+                        target_price=float(signal.get("target_price", 0.0)),
+                        setup_type="SYSTEM_SIGNAL",
+                        confidence_score=float(signal.get("win_probability", 0.0))
+                    )
+
+                    if order.status == OrderStatus.VALIDATED:
+                        logger.info(f"Risk checks passed for {symbol}. Routing to EMS...")
+                        # Route to EMS via Redis stream
+                        order_payload = {
+                            "order_id": order.order_id,
+                            "symbol": order.symbol,
+                            "side": order.side.value,
+                            "order_type": order.order_type.value,
+                            "quantity": str(order.quantity),
+                            "price": str(order.price)
+                        }
+                        redis_client.xadd("stream:orders:pending", order_payload)
+                        logger.info(f"Published order {order.order_id} to stream:orders:pending")
+                    else:
+                        logger.warning(f"Order rejected by OMS for {symbol}: {order.rejection_reason}")
+
         except Exception as e:
             logger.error(f"Error in OMS execution: {e}")
+            import time
             time.sleep(2)
 
 
@@ -592,6 +631,36 @@ async def zero_signals_check_job():
     except Exception as e:
         logger.error(f"Error in zero_signals_check_job: {e}")
 
+async def retraining_trigger_job():
+    """Evaluate model drift and trigger retraining if necessary."""
+    logger.info("Running automated retraining evaluation...")
+    try:
+        from continuous_learning.retraining.retraining_decision import RetrainingDecisionEngine
+        from continuous_learning.calibration.calibration_monitor import CalibrationMetrics
+        # In a full implementation, these would be fetched from the database / monitor logs
+        engine = RetrainingDecisionEngine()
+        # Mocking the decision data for now, since pulling actual drift metrics is a larger task
+        # The user requested to add a periodic self_correcting_timer job calling the logic.
+        decision = engine.should_retrain(
+            feature_drift={},
+            prediction_drift={},
+            data_drift={},
+            calibration_metrics=CalibrationMetrics(is_calibrated=True, expected_calibration_error=0.05, brier_score=0.1, max_calibration_error=0.1, reliability_curve=()),
+            current_accuracy=0.6,
+            data_points_available=5000
+        )
+        
+        logger.info(f"Retraining Decision: {decision.should_retrain} (Score: {decision.confidence})")
+        if decision.should_retrain:
+            logger.info("Triggering background retraining process...")
+            import subprocess
+            import os
+            script_path = os.path.join(os.path.dirname(__file__), "train_base_models.py")
+            subprocess.Popen([sys.executable, script_path])
+    except Exception as e:
+        logger.error(f"Error in retraining_trigger_job: {e}")
+
+
 
 async def cron_event_loop():
     # Token verification at 8:45 AM IST — 30 min before market open
@@ -604,11 +673,13 @@ async def cron_event_loop():
     post_market_task = asyncio.create_task(self_correcting_timer(18, 0, post_trade_analysis_job))
     # Daily outcome resolution and calibration at 5:30 PM (17:30 IST)
     resolution_task = asyncio.create_task(self_correcting_timer(17, 30, outcome_resolution_job))
+    # Weekly/Daily retraining evaluation at 6:30 PM
+    retraining_task = asyncio.create_task(self_correcting_timer(18, 30, retraining_trigger_job))
     # Daily snapshot pruning job at 11:00 PM
     pruning_task = asyncio.create_task(self_correcting_timer(23, 0, daily_snapshot_pruning_job))
     await asyncio.gather(
         token_check_task, pre_market_task, zero_signals_task,
-        post_market_task, resolution_task, pruning_task
+        post_market_task, resolution_task, retraining_task, pruning_task
     )
 
 

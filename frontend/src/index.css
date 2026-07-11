@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-ink-600;
+  }
+  body {
+    @apply bg-ink-900 text-mist-100;
+    font-feature-settings: 'tnum' 1, 'cv02' 1;
+  }
+  ::selection {
+    @apply bg-saffron-500/30 text-mist-100;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-ink-850;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-ink-600 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-500;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-saffron-500/70 ring-offset-2 ring-offset-ink-900;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  .num {
+    @apply font-mono tabular-nums;
+  }
+  .panel {
+    @apply bg-ink-800 border border-ink-600 rounded-lg shadow-panel;
+  }
+}

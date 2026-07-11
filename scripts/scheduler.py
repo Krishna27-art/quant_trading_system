@@ -148,7 +148,7 @@ def run_feed_manager():
         logger.error(f"Failed to start FeedManager: {e}")
         sys.exit(1)
 
-    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    redis_client = redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
 
     # on_tick publishes to 'live_ticks' stream
     def on_tick_callback(tick: TickData):

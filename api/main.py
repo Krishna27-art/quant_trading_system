@@ -2507,8 +2507,30 @@ def get_live_signals():
 def get_positions():
     """Get current positions."""
     try:
-        # Return empty positions for now - this would connect to OMS
-        return []
+        from database.connection import execute_query
+        rows = execute_query("SELECT id, symbol, quantity, avg_price, market_value, unrealized_pnl FROM positions") or []
+        positions = []
+        for r in rows:
+            symbol = r.get("symbol")
+            qty = r.get("quantity") or 0
+            avg_price = r.get("avg_price") or 0.0
+            market_val = r.get("market_value") or 0.0
+            pnl = r.get("unrealized_pnl") or 0.0
+            
+            # Simple fallback calculation for unrealizedPnlPct
+            pnl_pct = (pnl / (qty * avg_price) * 100) if (qty * avg_price) > 0 else 0.0
+            
+            positions.append({
+                "id": str(r.get("id")),
+                "symbol": symbol,
+                "side": "BUY" if qty > 0 else "SELL",
+                "quantity": abs(qty),
+                "avgEntryPrice": avg_price,
+                "lastPrice": market_val / abs(qty) if qty != 0 else avg_price,
+                "unrealizedPnl": pnl,
+                "unrealizedPnlPct": pnl_pct
+            })
+        return positions
     except Exception as e:
         logger.error(f"get_positions failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get positions")
